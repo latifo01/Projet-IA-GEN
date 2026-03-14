@@ -2,7 +2,7 @@
 
 Un utilitaire CLI et Dashboard Web (via Streamlit) conçu pour nettoyer, transformer et préparer vos datasets avant modélisation de manière semi-automatisée, à l'aide de LangGraph et OpenAI.
 
-L'objectif de cet outil n'est pas de jeter du LLM à l'aveugle sur des tableaux de données. Il orchestre plutôt un ensemble de **règles déterministes strictes** (pour les tâches évidentes comme la gestion des colonnes vides ou de l'imputation par la médiane) et s'appuie sur GPT-4o-mini **uniquement pour le contexte métier et les cas ambigus** (anomalies sémantiques, cardinaux intermédiaires, détection de features).
+L'objectif de cet outil n'est pas de jeter du LLM à l'aveugle sur des tableaux de données. Il orchestre plutôt un ensemble de **règles déterministes strictes** (pour les tâches évidentes comme la gestion des colonnes vides ou de l'imputation par la médiane) et s'appuie sur **gpt-5-mini** uniquement pour le contexte métier et les cas ambigus (anomalies sémantiques, cardinaux intermédiaires, détection de features).
 
 Surtout : **l'humain garde le contrôle**. À chaque étape critique du pipeline, l'exécution s'interrompt pour soumettre les choix des agents à l'utilisateur.
 
@@ -46,10 +46,32 @@ uv sync --extra dev --extra tracking
 cp .env.example .env
 ```
 
-Vous devrez ajouter votre clé API OpenAI dans le fichier `.env` nouvellement créé :
+Vous devrez configurer vos clés API dans le fichier `.env` nouvellement créé, en copiant ce format :
 ```env
-OPENAI_API_KEY=sk-xxxxxx...
-# LangSmith / WandB sont optionnels
+# LLM Provider Configuration
+# Fill in your credentials below
+
+# OpenAI 
+OPENAI_API_KEY='entrez votre api openai'
+# LangSmith (LangChain)
+LANGCHAIN_API_KEY='entrez votre api langchain'
+LANGCHAIN_PROJECT=projet Gen AI
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
+WANDB_API_KEY='entrez votre api wandb'
+
+# Google AI (Gemini) - for future use
+# GOOGLE_API_KEY=your-google-key-here
+
+# Anthropic (Claude) - for future use
+# ANTHROPIC_API_KEY=your-anthropic-key-here
+
+# Ollama (local) - for future use
+# OLLAMA_BASE_URL=http://localhost:11434
+
+# Default LLM provider: openai | google | anthropic | ollama
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-5-mini
 ```
 
 ---
