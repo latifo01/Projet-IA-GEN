@@ -1,0 +1,147 @@
+# Prompts pour chaque agent du pipeline
+version: "1.1"
+
+system_prompt: |
+
+infer_domain_and_anomalies: |
+  A partir des informations suivantes, infere le domaine metier de ce dataset et detecte les anomalies semantiques.
+
+  Noms des colonnes : {columns}
+  Echantillon de valeurs (5 lignes) : {sample}
+  Target : {target}
+  Task type : {task_type}
+  Colonnes et statistiques : {col_summary}
+
+  Reponds en JSON avec :
+  - "domain" : domaine metier (ex: "finance", "sante", "e-commerce", "immobilier", "transport", "education", "autre")
+  - "description" : description du dataset en 1-2 phrases
+  - "constraints" : liste de contraintes metier (ex: "age ne peut pas etre negatif", "prix doit etre positif")
+  - "sensitive_columns" : colonnes potentiellement sensibles (PII, donnees medicales, etc.)
+  - "anomalies" : liste de valeurs semantiquement suspectes, chaque element avec :
+    - "column" : nom de la colonne
+    - "issue" : description du probleme (ex: "ages negatifs", "prix a 0", "dates futures")
+    - "severity" : "high", "medium", ou "low"
+    - "type" : "proxy_for_missing" (valeurs sentinelles comme -1, 999, 9999), "impossible_value" (valeurs hors domaine), ou "other"
+    - "sentinel_values" : liste des valeurs sentinelles detectees (uniquement si type == "proxy_for_missing", ex: [-1, 999])
+
+analyze_dataset: |
+  Analyse ce dataset pour le preprocessing.
+
+  Shape : {shape}
+  Target : {target} (task: {task_type})
+  Domaine : {domain_context}
+  Colonnes supprimees automatiquement (triviales) : {auto_drop}
+  Audit des types : {dtype_audit}
+
+  Resume des colonnes restantes (type, semantic_type, %NaN, cardinalite ou min/max) :
+  {col_summary}
+
+  IMPORTANT : le champ "semantic_type" est determine de facon deterministe par le code et doit etre respecte :
+  - "binary_categorical" : variable categorielle a 2 modalites (ex: sexe, oui/non) — NE PAS appeler "bimodale"
+  - "nominal_categorical" : variable categorielle sans ordre
+  - "ordinal_or_discrete" : variable numerique a faible cardinalite (rating, rang)
+  - "continuous" : variable numerique continue
+
+  Reponds en JSON avec :
+  - "summary" : resume general du dataset
+  - "issues" : liste des problemes detectes
+  - "recommendations" : actions de preprocessing recommandees
+
+propose_transformations: |
+  Voici le diagnostic du dataset :
+  {diagnosis}
+
+  Domaine : {domain_context}
+  Contraintes metier : {constraints}
+  Anomalies semantiques : {semantic_anomalies}
+
+  Colonnes AMBIGUES (non resolues par les regles automatiques) :
+  {ambiguous_columns}
+
+  Target : {target}
+
+  IMPORTANT : Ne propose AUCUNE transformation sur la colonne target ({target}). Elle doit rester intacte.
+  IMPORTANT : Ne propose PAS de transformations sur les colonnes deja traitees par les regles automatiques.
+
+  Propose un plan de transformations en JSON avec une liste "transformations", chaque element :
+  - "column" : nom de la colonne (jamais la target)
+  - "action" : une des valeurs suivantes UNIQUEMENT :
+    "impute_mean", "impute_median", "impute_mode",
+    "drop_column", "drop_rows",
+    "one_hot_encoding", "label_encoding", "ordinal_encoding", "frequency_encoding",
+    "standard_scaling", "minmax_scaling", "robust_scaling",
+    "log_transform", "sqrt_transform",
+    "extract_datetime"
+  - "reason" : justification courte
+
+  N'invente aucune action en dehors de cette liste.
+
+propose_feature_engineering: |
+  Contexte du dataset :
+  Domaine : {domain}
+  Colonnes disponibles : {columns}
+  Target : {target} (task: {task_type})
+  Diagnosis : {diagnosis}
+
+  Propose des features derivees pertinentes pour ameliorer la prediction.
+
+  Reponds en JSON avec une liste "features", chaque element :
+  - "name" : nom de la feature proposee
+  - "formula" : formule textuelle (ex: "total_bill / size", "log(price)", "year - year_built")
+  - "reason" : justification
+  - "source_columns" : liste des colonnes sources
+
+  Limite-toi a 5 propositions maximum. Ne propose que des features realisables avec les colonnes existantes.
+
+propose_outlier_treatment: |
+  Voici le rapport de detection d'outliers par colonne :
+  {outlier_report}
+
+  Domaine : {domain}
+  Contraintes metier : {constraints}
+  Target : {target}
+
+  IMPORTANT : Ne propose AUCUN traitement sur la colonne target ({target}).
+
+  Pour chaque colonne avec des outliers, decide du traitement en tenant compte du contexte metier.
+  Par exemple, un salaire de 500k est un outlier statistique mais pas une erreur en finance.
+
+  Reponds en JSON avec une liste "outlier_actions", chaque element :
+  - "column" : nom de la colonne (jamais la target)
+  - "method" : "iqr" ou "zscore" (deja determine)
+  - "action" : "clip", "remove", ou "keep"
+  - "reason" : justification contextuelle
+
+generate_report: |
+  Voici le resume complet du preprocessing :
+
+  Diagnostic initial : {diagnosis}
+  Domaine : {domain_context}
+  Target meta : {target_meta}
+  Transformations appliquees : {transformations}
+  Traitement outliers : {outlier_treatment}
+  Correlations elevees avec la target (potential leakage ou redondance) : {leakage_alerts}
+  Feature engineering proposals : {feature_proposals}
+  Shape original : {original_shape}
+  Shape final : {final_shape}
+  Score qualite : {quality_score}
+  Analyse de confiance : {confidence_analysis}
+  Violations de contraintes domaine : {constraint_violations}
+  Evaluation baseline : {baseline_evaluation}
+  Alertes de corrélation inter-features : {correlation_alerts}
+
+  Genere un rapport de synthese complet en JSON avec :
+  - "dataset_summary" : resume du dataset original
+  - "domain" : domaine identifie
+  - "issues_found" : problemes identifies
+  - "transformations_applied" : liste des transformations
+  - "outlier_treatment" : resume du traitement des outliers
+  - "leakage_warnings" : alertes de leakage
+  - "multicollinearity" : analyse des corrélations inter-features avec méthodes de traitement suggérées
+  - "before_after" : comparaison avant/apres (shape, missing, types)
+  - "quality_score" : score decompose et justification
+  - "feature_engineering_suggestions" : suggestions de features proposees
+  - "recommended_models" : liste de modeles avec justification
+  - "preprocessing_tips" : conseils supplementaires
+  - "potential_issues" : problemes a anticiper
+  - "recommendations" : conseils globaux pour la modelisation

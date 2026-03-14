@@ -1,0 +1,423 @@
+{
+  "dataset_summary": {
+    "shape_original": {
+      "rows": 274,
+      "cols": 4
+    },
+    "shape_final": {
+      "rows": 219,
+      "cols": 8
+    },
+    "columns": {
+      "Year": {
+        "type": "int",
+        "min": 1970,
+        "max": 2020,
+        "distinct": 51,
+        "role": "temporal_index"
+      },
+      "Country": {
+        "type": "object",
+        "cardinality": 6,
+        "role": "categorical_group"
+      },
+      "Life_Expectancy": {
+        "type": "float",
+        "min": 70.6,
+        "max": 84.7,
+        "distinct": 118,
+        "role": "predictor (temporal)"
+      },
+      "Spending_USD": {
+        "type": "float",
+        "role": "target (regression)",
+        "target_meta": {
+          "n_observations": 274,
+          "pct_nan": 0.0,
+          "mean": 2789.3389,
+          "std": 2194.9398
+        }
+      }
+    },
+    "panel": {
+      "expected_balanced_rows": 306,
+      "actual_rows": 274,
+      "missing_observations_count": 32,
+      "note": "Panel is unbalanced (some country-years missing)."
+    },
+    "domain_notes": "Données annuelles par pays (1970–2020) sur dépenses en USD (probablement dépenses de santé) et espérance de vie."
+  },
+  "domain": {
+    "field": "santé (santé publique / dépenses de santé)",
+    "context": "Séries temporelles par pays (panel) : target = dépenses en USD; predictor principal = espérance de vie. Approches attendues : forecasting temporel par pays ou modèles de panel pour expliquer différences inter-pays."
+  },
+  "issues_found": [
+    "panel_déséquilibré : attendu 306 lignes (6 pays × 51 années) ; dataset original = 274 lignes → 32 années manquantes réparties par pays.",
+    "pertes_de_lignes_non-documéntées : le pipeline aboutit à 219 lignes (55 lignes en moins par rapport à l'original) — cause(s) à vérifier (imputation, création de lags/rolling, suppression de NA, filtrage).",
+    "informations_incomplètes_sur_la_cible : résumé initial ne contenait pas de détail complet sur la distribution de Spending_USD (skewness, percentiles, outliers) — bien que target meta affiche mean/std et 0% NA.",
+    "forte_corrélation entre Year et Life_Expectancy (pearson=0.9023) → multicolinéarité potentielle et risque d'interprétations trompeuses si les deux sont gardées sans transformation.",
+    "risque_de_fuite_temporelle (data leakage) si les lags/encodages ou la validation utilisent des données futures pour prédire le passé — nécessité d'une validation temporelle par pays.",
+    "taille_relativement_faible (219–274 lignes; 6 groupes) limite complexité des modèles et robustesse des estimations.",
+    "incohérences apparentes dans les métadonnées du pipeline (ex. max Year rapporté = 2011 dans le rapport d'outliers vs 2020 attendu) — à clarifier.",
+    "type_consistency partielle : transformations appliquées (one-hot) ont changé le jeu de variables ; vérifier toutes les conversions de type et colonnes sauvegardées."
+  ],
+  "transformations_applied": [
+    {
+      "step": "categorical_encoding",
+      "column": "Country",
+      "action": "one_hot_encoding",
+      "resulting_columns": [
+        "Country_France",
+        "Country_Germany",
+        "Country_Great Britain",
+        "Country_Japan",
+        "Country_USA",
+        "Country_<sixième_modalité_si_applicable>"
+      ],
+      "artifacts_saved": [
+        "ohe_encoder_Country"
+      ],
+      "notes": "One-hot retenu pour 6 modalités ; encodage simple et transparent. Attention à appliquer l'encodage en respectant splits temporels pour éviter fuite si target-encoding envisagée ultérieurement."
+    }
+  ],
+  "outlier_treatment": {
+    "summary": "Contrôles d'outliers appliqués ; pipeline n'a pas supprimé d'observations pour les colonnes listées (outliers_found = 0).",
+    "per_column": [
+      {
+        "column": "Year",
+        "method": "IQR (appliqué car test D'Agostino-Pearson → non-normal)",
+        "n_outliers": 0,
+        "bounds": {
+          "lower": 1954.5,
+          "upper": 2030.5
+        },
+        "min": 1970.0,
+        "max": 2011.0,
+        "note": "Max Year observé = 2011 dans le rapport ; à vérifier vs métadonnées attendues (2020)."
+      },
+      {
+        "column": "Life_Expectancy",
+        "method": "IQR (D'Agostino-Pearson non-normal)",
+        "n_outliers": 0,
+        "bounds": {
+          "lower": 68.575,
+          "upper": 85.575
+        },
+        "min": 70.6,
+        "max": 83.0
+      },
+      {
+        "column": "Country_* (one-hot cols)",
+        "method": "bimodal detection",
+        "n_outliers": 0,
+        "note": "One-hot cols are binary (0/1) – bimodality expected; no outlier action required."
+      }
+    ],
+    "new_shape_after_outlier_treatment": {
+      "rows": 219,
+      "cols": 8
+    },
+    "note": "Aucune suppression d'outliers identifiée, mais la forme du dataset a changé — investiguer sources de perte de lignes."
+  },
+  "leakage_warnings": {
+    "detected": "none_in_pipeline",
+    "risk_level": "low (pipeline actuel n'a pas identifié features entraînant fuite directe)",
+    "important_cautions": [
+      "Tout feature engineering temporel (lags, rolling, target-encoding temporel) doit être calculé strictly using past data per country — ne pas utiliser valeurs de t+1.. pour prédire t.",
+      "La validation doit être temporelle et groupée par 'Country' (ex. holdout chronologique dernier N années par pays ou time-series cross-validation par country).",
+      "Si l'objectif est forecast à horizon h, les lags/créations doivent être alignées sur l'horizon pour éviter leakage."
+    ]
+  },
+  "multicollinearity": {
+    "analysis": [
+      {
+        "pair": [
+          "Year",
+          "Life_Expectancy"
+        ],
+        "method": "pearson",
+        "correlation": 0.9023,
+        "severity": "very_high",
+        "implication": "Year et Life_Expectancy partagent une forte tendance linéaire (amélioration de l'espérance de vie au fil du temps). Garder les deux peut nuire à l'interprétation des coefficients (colinéarité) et augmenter VIF."
+      }
+    ],
+    "suggested_treatments": [
+      "drop_least_informative: supprimer Year ou Life_Expectancy si l'un apporte peu d'information additionnelle pour le target après tests (préférence dépend du but — forecasting vs explication).",
+      "use_differencing: remplacer Year ou Life_Expectancy par leurs dérivées (ΔLife_Expectancy) ou par time_since_first_year_by_country pour capter tendance relative au pays et réduire corrélation globale.",
+      "feature_interaction: combiner (par ex. ratio Life_Expectancy/Year ou produit centré) si cela apporte sens;",
+      "pca_or_embedding: si plusieurs variables fortement corrélées ≥3, appliquer réduction de dimension (PCA) mais conserver interprétabilité limitée;",
+      "vif_filtering: calculer VIF et supprimer itérativement features avec VIF>5;",
+      "keep_for_tree_models: noter que les modèles basés arbres/boosting tolèrent la colinéarité mieux que modèles linéaires."
+    ]
+  },
+  "before_after": {
+    "before": {
+      "shape": {
+        "rows": 274,
+        "cols": 4
+      },
+      "missingness_overview": {
+        "Spending_USD_pct_nan": 0.0,
+        "Life_Expectancy_pct_nan": "unknown (to audit)",
+        "Country_pct_nan": "unknown (to audit)",
+        "Year_pct_nan": 0.0
+      },
+      "types": {
+        "Year": "int",
+        "Country": "object",
+        "Life_Expectancy": "float",
+        "Spending_USD": "float"
+      }
+    },
+    "after": {
+      "shape": {
+        "rows": 219,
+        "cols": 8
+      },
+      "transformations_applied": [
+        "one_hot_encoding(Country) → new binary columns",
+        "outlier checks (no removals)",
+        "some rows removed or filtered (cause not documented in artifacts)"
+      ],
+      "missingness_overview": {
+        "Spending_USD_pct_nan": 0.0,
+        "Life_Expectancy_pct_nan": "unknown (to audit after transformations)",
+        "one_hot_cols": "no NA (0/1)"
+      },
+      "types": {
+        "Year": "int",
+        "Life_Expectancy": "float",
+        "Country_*": "int/binary",
+        "Spending_USD": "float"
+      },
+      "notes": "Vérifier l'origine exacte de la perte de 55 lignes et tout changement de bornes temporelles (ex. Year max = 2011 dans rapport d'outliers)."
+    }
+  },
+  "quality_score": {
+    "overall": 100.0,
+    "completeness": 30.0,
+    "completeness_gain": 0,
+    "rows_lost": 0,
+    "cols_lost": 0,
+    "type_consistency": 15.0,
+    "leakage_risk": "low",
+    "leakage_count": 0,
+    "drop_penalty": 0.0,
+    "llm_drops": 0,
+    "outlier_coverage": 20.0
+  },
+  "feature_engineering_suggestions": [
+    {
+      "name": "time_since_first_year_by_country",
+      "formula": "Year - min(Year) pour chaque Country (ex. years since first observed year for that country)",
+      "reason": "Capture un index temporel relatif par pays (effet de tendance locale) sans confondre les pays entre eux ; utile pour modéliser tendances temporelles non stationnaires propres à chaque pays.",
+      "source_columns": [
+        "Year",
+        "Country"
+      ]
+    },
+    {
+      "name": "country_one_hot",
+      "formula": "One-hot encodage de Country → création de 6 indicatrices binaires (Country == c_i)",
+      "reason": "Représente effets fixes liés au pays (niveau moyen de dépense, structure du système de santé, facteurs invariants) ; simple et stable pour 6 modalités.",
+      "source_columns": [
+        "Country"
+      ]
+    },
+    {
+      "name": "life_expectancy_lag1",
+      "formula": "Life_Expectancy_{t-1} par Country (valeur de Life_Expectancy de l'année précédente pour le même pays)",
+      "reason": "La valeur passée de l'espérance de vie aide à prédire la dépense courante (informations démographiques persistantes). Doit être calculée en respectant l'ordre chronologique par pays pour éviter fuite (ne pas utiliser valeurs futures).",
+      "source_columns": [
+        "Year",
+        "Country",
+        "Life_Expectancy"
+      ]
+    },
+    {
+      "name": "delta_life_expectancy_1yr",
+      "formula": "Life_Expectancy_t - Life_Expectancy_{t-1} par Country (variation annuelle de l'espérance de vie)",
+      "reason": "Change captures rythme d'amélioration/détérioration de la santé qui peut impacter la dépense (augmentations rapides ou baisses peuvent modifier dépenses de santé) ; complémentaire à la valeur absolue.",
+      "source_columns": [
+        "Year",
+        "Country",
+        "Life_Expectancy"
+      ]
+    },
+    {
+      "name": "rolling_mean_life_expectancy_3yr",
+      "formula": "Moyenne mobile des 3 années précédentes de Life_Expectancy par Country (mean of Life_Expectancy_{t-1},_{t-2},_{t-3})",
+      "reason": "Lisse le bruit annuel et fournit une estimation plus robuste du niveau de santé récent par pays, utile si Life_Expectancy contient variations annuelles; calculer en évitant fuite temporelle (uniquement années passées).",
+      "source_columns": [
+        "Year",
+        "Country",
+        "Life_Expectancy"
+      ]
+    }
+  ],
+  "recommended_models": [
+    {
+      "model": "Gradient Boosting (LightGBM / XGBoost / CatBoost)",
+      "justification": "Bon compromis biais/variance ; tolère colinéarité; performant sur datasets petits à moyens si features informatives (lags, rolling, country ohe). Privilégier régularisation et validation temporelle."
+    },
+    {
+      "model": "Panel / Mixed Effects Models (fixed effects / random effects)",
+      "justification": "Approche économétrique adaptée à données de panel pour estimer effets pays fixes et tendances temporelles, utile si objectif est explicatif plutôt que pure prédiction."
+    },
+    {
+      "model": "Per-country Time-Series Models (ARIMA / SARIMAX / Prophet)",
+      "justification": "Si dynamiques nationales très différentes, modéliser chaque pays séparément peut être préférable — attention au petit nombre d'années manquantes et à la longueur de série (possiblement faible pour certains pays)."
+    },
+    {
+      "model": "Regularized Linear Models (Ridge / Lasso / ElasticNet)",
+      "justification": "Interprétables, contrôlent multicolinéarité (ridge) et sélectionnent features (lasso). Bon point de départ pour comparaison avec modèles plus complexes."
+    }
+  ],
+  "preprocessing_tips": [
+    "Audit complet des missing : calculer %NaN par colonne, par pays et par année, vérifier doublons (Year+Country).",
+    "Documenter précisément la source de la perte de 55 lignes (filtrage, création de lags, suppression NA sur target, etc.).",
+    "Imputation temporelle par pays pour features (interpolation linéaire ou rolling median) ; si la cible est manquante, l'exclure du training standard ou imputer uniquement pour analyses exploratoires.",
+    "Créer lags / rolling strictly using past observations per country to avoid leakage. Enregistrer quelles années ont été perdues lors de création de lags.",
+    "Validation : utiliser holdout chronologique par pays ou time-series split groupé par Country ; éviter random split.",
+    "Tester log-transform de Spending_USD si distribution asymétrique ; comparer métriques sur échelle transformée vs originale (inverser la transformation pour rapporter RMSE/MAE compréhensibles).",
+    "Si vous gardez Year et Life_Expectancy simultanément, mesurer VIF et considérer differences (Δ) ou time_since_first_year pour réduire colinéarité.",
+    "Pour encodage catégoriel : one-hot acceptable; si target-encoding envisagée, le faire en mode temporel (fit only on past folds) pour éviter leakage."
+  ],
+  "potential_issues": [
+    "Perte_de_lignes_non_expliquée (55 lignes) — doit être explicitement auditée avant modélisation.",
+    "Incohérence temporelle (max Year rapporté = 2011 vs 2020 attendu) — vérifier extraction/dates.",
+    "Panel irrégulier (années manquantes par pays) compliquant l'utilisation de méthodes qui nécessitent séries équilibrées.",
+    "Taille limitée par pays pour modèles par-pays (risque d'overfitting si modèles très flexibles).",
+    "Forte corrélation Year vs Life_Expectancy → instabilité des coefficients pour modèles linéaires interprétatifs.",
+    "Risque de leakage si target-encoding ou features agrégées ne respectent pas l'ordre chronologique.",
+    "Possibilité d'effets structurels (policy changes, ruptures) non capturés par features actuelles — résidus non stationnaires."
+  ],
+  "recommendations": [
+    "Phase 1 — Audit et nettoyage",
+    "  - Calculer et documenter %NaN pour chaque colonne et par pays/année.",
+    "  - Reproduire l'historique des transformations pour identifier pourquoi 55 lignes ont été retirées ; restaurer si suppression accidentelle.",
+    "  - Clarifier la borne temporelle réelle (1970–? – vérifier si 2020 réellement présent).",
+    "Phase 2 — Feature engineering (respect strict de la chronologie)",
+    "  - Générer lags (Spending_USD_{t-1,t-2}), Δ(Life_Expectancy), rolling means (3/5 années) par pays ; enregistrer années perdues par construction.",
+    "  - Créer time_since_first_year_by_country pour capter tendance locale et réduire multicolinéarité.",
+    "  - Tester log(Spending_USD) si forte asymétrie et comparer performances.",
+    "Phase 3 — Modélisation et validation",
+    "  - Préparer validations temporelles groupées par pays (holdout chronologique des dernières N années par pays ou time-series CV).",
+    "  - Comparer baselines persistentes (last value, rolling mean) avant modèles ML.",
+    "  - Tester modèles par-pays (ARIMA/Prophet) et modèles globaux (GBM, panel models). Choisir selon objectif (forecast vs explication).",
+    "  - Pour modèles linéaires, surveiller VIF et appliquer régularisation (Ridge/ElasticNet) si besoin.",
+    "Phase 4 — Diagnostics et documentation",
+    "  - Analyser résidus par pays et par période pour identifier ruptures temporelles ou hétéroscédasticité.",
+    "  - Documenter toutes les hypothèses (disponibilité features à t, imputations, splits) et tester sensibilité (variation de lags, horizons)."
+  ],
+  "evaluation_baseline": {
+    "metric": "r2",
+    "baseline_score": -3.1557,
+    "model_score": 0.681,
+    "delta": 3.8367,
+    "note": "Un modèle (non précisé ici) améliore fortement la baseline ; toutefois valider robustesse via CV temporelle par pays."
+  },
+  "prompt_templates_version": "1.1",
+  "confidence_analysis": {
+    "total_decisions": 8,
+    "deterministic_count": 8,
+    "llm_count": 0,
+    "deterministic_ratio": 100.0,
+    "low_confidence_columns": [],
+    "medium_confidence_columns": [],
+    "no_decision_columns": []
+  },
+  "confidence_map": [
+    {
+      "step": "transformation",
+      "column": "Country",
+      "action": "one_hot_encoding",
+      "confidence": "high",
+      "source": "rule"
+    },
+    {
+      "step": "outlier",
+      "column": "Country_France",
+      "action": "keep",
+      "confidence": "high",
+      "source": "rule"
+    },
+    {
+      "step": "outlier",
+      "column": "Country_Germany",
+      "action": "keep",
+      "confidence": "high",
+      "source": "rule"
+    },
+    {
+      "step": "outlier",
+      "column": "Country_Great Britain",
+      "action": "keep",
+      "confidence": "high",
+      "source": "rule"
+    },
+    {
+      "step": "outlier",
+      "column": "Country_Japan",
+      "action": "keep",
+      "confidence": "high",
+      "source": "rule"
+    },
+    {
+      "step": "outlier",
+      "column": "Country_USA",
+      "action": "keep",
+      "confidence": "high",
+      "source": "rule"
+    },
+    {
+      "step": "scaling",
+      "column": "Year",
+      "action": "standard_scaling",
+      "confidence": "high",
+      "source": "rule"
+    },
+    {
+      "step": "scaling",
+      "column": "Life_Expectancy",
+      "action": "standard_scaling",
+      "confidence": "high",
+      "source": "rule"
+    }
+  ],
+  "train_test_split": {
+    "train_size": 219,
+    "test_size": 55,
+    "stratified": false,
+    "train_path": "data\\outputs\\healthexp_train_final.csv",
+    "test_path": "data\\outputs\\healthexp_test_final.csv"
+  },
+  "baseline_evaluation": {
+    "status": "ok",
+    "metric": "r2",
+    "baseline_score": -3.1557,
+    "model_score": 0.681,
+    "delta": 3.8367
+  },
+  "constraint_violations": [],
+  "known_limitations": [
+    "Outlier detection is univariate only (IQR/Z-score per column). Multivariate outliers (e.g. Mahalanobis, Isolation Forest) are not detected."
+  ],
+  "correlation_alerts": [
+    {
+      "column_a": "Year",
+      "column_b": "Life_Expectancy",
+      "correlation": 0.9023,
+      "method": "pearson",
+      "severity": "very_high",
+      "suggested_actions": [
+        "drop_least_informative: supprimer la variable avec le moins de variance ou la moins corrélée au target",
+        "pca: réduction de dimension sur le groupe de variables corrélées (>= 3)",
+        "vif: supprimer itérativement les features avec VIF > 5",
+        "feature_interaction: combiner les variables corrélées (ratio, produit, différence)",
+        "keep: certains modèles (arbres, gradient boosting) tolèrent la colinéarité"
+      ]
+    }
+  ],
+  "critical_warnings": []
+}

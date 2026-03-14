@@ -1,0 +1,99 @@
+# =========================
+# Environnements Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# =========================
+# Variables d'environnement
+# =========================
+.env
+.env.local
+.env.*.local
+
+# =========================
+# Données et Modèles
+# =========================
+*.csv
+*.joblib
+
+# Par défaut on ignore tout le dossier data (pour éviter les fuites)
+data/*
+# Sauf les dossiers de configuration ou les petits samples (à décommenter si besoin)
+!data/sample/
+!data/.keep
+
+# Permettre de versionner les rapports JSON dans data/outputs/
+!data/outputs/
+data/outputs/*
+!data/outputs/*.json
+
+# Les sous-dossiers spécifiques que vous aviez déjà exclus (au cas où vous laissez data/ versionné libre)
+data/cache/
+data/embeddings/
+data/raw/
+data/processed/
+
+# =========================
+# Outils de Tests & Qualité
+# =========================
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.rspec
+.mypy_cache/
+.ruff_cache/
+
+# =========================
+# IA, Machine Learning & Logs
+# =========================
+wandb/
+.ipynb_checkpoints/
+*.log
+
+# =========================
+# Artefacts de build LaTeX
+# =========================
+*.aux
+*.bbl
+*.blg
+*.fls
+*.log
+*.out
+*.toc
+*.fdb_latexmk
+*.synctex.gz
+*.dvi
+*.pdfsync
+
+# =========================
+# IDEs et OS
+# =========================
+.vscode/
+.idea/
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =========================
+# Lockfiles
+# =========================
+# uv.lock est volontairement NON ignoré pour assurer la reproductibilité de l'application.
+# Si ce projet devient un package pur, vous pourrez rajouter uv.lock ici.
+code_instructions.md
+guide.md
+prompt_testing.ipynb
+response_analysis.ipynb

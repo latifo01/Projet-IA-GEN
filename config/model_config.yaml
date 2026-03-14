@@ -1,0 +1,12 @@
+# Configuration des modeles LLM
+
+models:
+  gpt-5-mini:
+    provider: openai
+    model_name: gpt-5-mini
+    temperature: 1        # gpt-5-mini only supports default (1)
+    supports_temperature: false
+    max_tokens: 16384
+    seed: 42
+
+default_model: gpt-5-mini

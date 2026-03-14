@@ -1,0 +1,35 @@
+[project]
+name = "generative-ai-project"
+version = "0.1.0"
+description = "Agent IA de preprocessing automatise pour projets Data Science"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.0.0",
+    "langchain-openai>=0.3.0",
+    "langgraph>=0.2.0",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "langsmith>=0.1.0",
+    "pandas>=2.0.0",
+    "scikit-learn>=1.4.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+    "scipy>=1.12.0",
+    "ipykernel>=7.2.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "streamlit>=1.55.0",
+    "nbformat>=5.10.4",
+    "pytest>=9.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter>=1.0.0",
+    "ipykernel>=6.0.0",
+    "pytest>=8.0.0",
+]
+tracking = [
+    "wandb>=0.17.0",
+]
