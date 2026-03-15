@@ -64,7 +64,6 @@
   citecolor=codeblue
 }
 
-% TikZ styles
 \tikzset{
   agent/.style={
     rectangle, rounded corners=4pt, draw=codeblue, fill=codeblue!10,
@@ -85,11 +84,10 @@
 \title{
   \vspace{-1cm}
   \Large\textbf{Agent de Preprocessing Data Science}\\[0.4cm]
-  \large Conception et implementation d'un pipeline de preparation\\
-  de donnees pilote par un grand modele de langage\\[0.6cm]
+  \large Conception d'un pipeline de préparation de données semi-automatisé\\[0.6cm]
   \normalsize Rapport technique
 }
-\author{}
+\author{Ibrahim Youssouf \textsc{abdelatif}}
 \date{Mars 2026}
 
 \begin{document}
@@ -100,86 +98,76 @@
 \vspace{0.5cm}
 
 \begin{abstract}
-Ce rapport decrit la conception, l'architecture et les choix d'implementation d'un pipeline
-de preprocessing de donnees automatise, pilote par GPT-4o-mini. Le systeme repose sur
-LangGraph pour orchestrer quatre agents specialises, un mecanisme de validation humaine
-a trois points d'interruption, et une separation stricte entre decisions deterministes et
-decisions deleguees au modele de langage. Le pipeline prend en entree tout fichier CSV
-avec une colonne cible et produit des jeux train/test prets pour la modelisation, accompagnes
-d'un rapport de qualite decompose. Nous justifions chaque choix architectural, decrivons le
-comportement interne de chaque agent, et presentons les garanties offertes en termes de
-rigueur statistique (etancheite train/test, detection de leakage, traitement contextuel
-des outliers).
+Ce rapport documente la conception d'un pipeline de preprocessing automatisé piloté
+par GPT-5-mini. L'outil prend en entrée un fichier CSV avec une colonne cible et
+produit des jeux train/test prêts pour la modélisation, accompagnés d'un rapport de
+qualité décomposé. L'architecture repose sur LangGraph pour orchestrer quatre agents
+spécialisés et trois points d'interruption humaine. Le fil conducteur de l'ensemble
+des choix d'implémentation est une séparation stricte entre ce qui peut être codé
+de façon déterministe et ce qui nécessite génuinement du raisonnement contextuel.
 \end{abstract}
-
+\newpage
 \vspace{0.5cm}
 \tableofcontents
 \newpage
 
 % ============================================================
-\section{Introduction et motivation}
+\section{Motivation}
 % ============================================================
 
-Le preprocessing de donnees est, dans la pratique professionnelle, l'etape qui consomme
-le plus de temps dans un projet de machine learning, et celle ou les erreurs ont l'impact
-le plus durable sur la qualite du modele final. Les erreurs classiques --- fuite de donnees
-du test vers le train, imputation avec des statistiques calculees sur le test, encodage
-inconsistant entre les splits --- sont frequentes meme chez des praticiens experimentes,
-precis\'{e}ment parce qu'elles resultent d'une accumulation de micro-decisions repetitives.
+Le preprocessing consomme en pratique la majorité du temps d'un projet ML, et c'est
+là que les erreurs les plus tenaces s'introduisent --- non par négligence, mais par
+accumulation de micro-décisions répétitives. La fuite de données du test vers le train,
+l'imputation calculée sur l'ensemble complet, l'encodage inconsistant entre les splits :
+ces bugs sont aussi courants chez les praticiens expérimentés que chez les débutants,
+précisément parce qu'ils ne résultes pas d'une incompréhension mais d'une inattention.
 
-L'objectif de ce projet est de construire un systeme capable d'automatiser ces decisions
-tout en maintenant un niveau de contr\^{o}le humain suffisant pour les choix strategiques.
-La contrainte centrale est la suivante : le systeme ne doit pas etre une boite noire.
-Chaque proposition doit etre verifiable, explicable, et corrigeable par un praticien
-avant execution.
+L'objectif du projet est d'automatiser ces décisions sans pour autant construire une
+boîte noire. Deux contraintes ont guidé l'implémentation depuis le début.
 
-Deux lignes directrices ont guide les choix d'implementation :
+La première : tout ce qui est non ambigu doit être codé en dur. Supprimer une colonne
+à 100\% de valeurs manquantes ne dépend pas du domaine. Ces règles sont déterministes,
+testables unitairement, et ne nécessitent pas de modèle de langage.
 
-\begin{enumerate}
-  \item \textbf{Determinisme la ou c'est possible.} Un seuil de 50\% de valeurs manquantes
-  justifie toujours une suppression de colonne, independamment du domaine. Ces regles sont
-  codees en dur et ne necessitent pas de LLM.
-
-  \item \textbf{LLM uniquement pour l'ambigu et le contextuel.} Une colonne de cardinalite
-  moyenne (10--50 valeurs uniques) peut etre one-hot encodee ou frequency encodee selon
-  le domaine. C'est la que le modele de langage apporte de la valeur ajoutee.
-\end{enumerate}
+La seconde : le modèle de langage n'intervient que là où une règle générique serait
+arbitraire. Choisir entre \texttt{one\_hot\_encoding} et \texttt{frequency\_encoding}
+pour une colonne à cardinalité moyenne n'a pas de réponse universelle --- cela dépend
+du domaine, de la sémantique des catégories, et du type de modèle cible. C'est
+précisément le genre de raisonnement où un LLM nourri du contexte du dataset apporte
+quelque chose qu'une heuristique codée en dur ne peut pas offrir.
 
 % ============================================================
-\section{Architecture generale}
+\section{Architecture générale}
 % ============================================================
 
-\subsection{Choix du framework d'orchestration}
+\subsection{Choix du framework : LangGraph}
 
-Le pipeline est construit sur \textbf{LangGraph}, un framework de graphes d'etat con\c{c}u
-pour orchestrer des agents LLM avec gestion d'etat persistant et points d'interruption.
+Plusieurs options ont été évaluées. LangChain en mode chain classique couvre les flux
+linéaires, mais ne gère pas nativement les boucles de rejet humain ni la persistance
+d'état entre deux interruptions. Prefect et Airflow sont de bons outils d'orchestration
+mais n'ont pas de primitives pour le human-in-the-loop. Du Python pur aurait été la
+solution la plus simple, sauf que la gestion manuelle des checkpoints et des reprises
+après interruption devient fragile dès que le pipeline dépasse trois ou quatre étapes.
 
-Alternatives considerees :
-
-\begin{itemize}
-  \item \textbf{LangChain chains classiques} : adequate pour des flux lineaires, mais ne
-  supporte pas nativement les boucles conditionnelles (rejet humain $\rightarrow$ re-proposition)
-  ni les interruptions persistantes.
-  \item \textbf{Prefect / Airflow} : frameworks d'orchestration generaux, mais sans
-  primitives pour le human-in-the-loop ni pour la gestion d'etat partage entre noeuds.
-  \item \textbf{Code Python pur} : le plus simple, mais la gestion manuelle du checkpoint
-  et des reprises apres interruption devient rapidement fragile.
-\end{itemize}
-
-LangGraph s'impose par deux caracteristiques techniques determinantes : le
-\texttt{StateGraph} permet de partager un dictionnaire d'etat mutable entre tous les
-noeuds, et le \texttt{interrupt()} permet de suspendre l'execution en conservant l'etat
-complet dans un checkpointer SQLite.
+LangGraph s'impose par deux caractéristiques concrètes. Le \texttt{StateGraph} partage
+un dictionnaire d'état mutable entre tous les nœuds, ce qui évite de faire transiter
+des données par des variables globales ou des fichiers intermédiaires. Le \texttt{interrupt()}
+suspend l'exécution en sérialisant l'état complet dans un checkpointer SQLite : si
+l'utilisateur ferme son terminal entre deux validations, la reprise se fait en
+réinstanciant le pipeline avec le même \texttt{thread\_id} --- l'état est restauré
+exactement depuis le dernier nœud exécuté.
 
 \subsection{Vue d'ensemble du graphe}
 
-La figure \ref{fig:pipeline} represente le graphe d'execution complet.
+Le pipeline est composé de onze nœuds et trois points d'interruption humaine
+(figure~\ref{fig:pipeline}). Chaque interruption soumet les propositions de l'agent
+courant à l'utilisateur ; un rejet renvoie au nœud précédent sans compteur de retries,
+laissant intentionnellement l'humain converger à son rythme.
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[node distance=0.55cm and 0.3cm]
 
-  % Nodes
   \node[node_box, fill=gray!10] (start) {START};
   \node[node_box, below=of start] (analyze) {analyze};
   \node[node_box, below=of analyze] (split) {split\_data};
@@ -195,7 +183,6 @@ La figure \ref{fig:pipeline} represente le graphe d'execution complet.
   \node[node_box, below=of scaling] (report) {generate\_report};
   \node[node_box, below=of report, fill=gray!10] (end) {END};
 
-  % Main vertical arrows
   \draw[arrow] (start) -- (analyze);
   \draw[arrow] (analyze) -- (split);
   \draw[arrow] (split) -- (hr_domain);
@@ -209,157 +196,130 @@ La figure \ref{fig:pipeline} represente le graphe d'execution complet.
   \draw[arrow] (scaling) -- (report);
   \draw[arrow] (report) -- (end);
 
-  % Reject loops
   \draw[redarrow] (hr_domain.west) -- ++(-1.2,0) |- node[left, font=\tiny, pos=0.25]{reject} (analyze.west);
   \draw[redarrow] (hr_trans.west) -- ++(-1.4,0) |- node[left, font=\tiny, pos=0.25]{reject} (propose_t.west);
   \draw[redarrow] (hr_out.west) -- ++(-1.2,0) |- node[left, font=\tiny, pos=0.25]{reject} (propose_o.west);
 
-  % Leakage sub-interrupt
   \draw[arrow] (hr_trans.east) -- node[above, font=\tiny]{leakage} (hr_leak.west);
   \draw[arrow] (hr_leak.south) |- (exec_t.east);
 
 \end{tikzpicture}
-\caption{Graphe d'execution LangGraph. Les losanges rouges sont des points d'interruption
-humaine. Les fleches rouges representent les boucles de rejet.}
+\caption{Graphe d'exécution LangGraph. Les losanges rouges sont des points d'interruption
+humaine. Les flèches rouges représentent les boucles de rejet.}
 \label{fig:pipeline}
 \end{figure}
 
-\subsection{PipelineState : l'etat partage}
+\subsection{Le \texttt{PipelineState} comme contrat entre agents}
 
-Tous les noeuds du graphe communiquent exclusivement via un \texttt{TypedDict} appele
-\texttt{PipelineState}. Ce choix architectural garantit que chaque noeud est une
-fonction pure : ses sorties dependent uniquement de l'etat en entree, sans effets
-de bord caches. Cela facilite le test unitaire de chaque agent et la reconstruction
-de l'etat apres un checkpoint.
+Tous les nœuds communiquent exclusivement via un \texttt{TypedDict} appelé
+\texttt{PipelineState}. Ce choix architectural a une conséquence directe sur la
+testabilité : chaque agent devient une fonction pure dont les sorties ne dépendent
+que de l'état en entrée, sans effets de bord cachés ni dépendance à des variables
+externes. Les champs principaux sont les chemins des fichiers CSV à chaque étape
+(\texttt{df\_path}, \texttt{train\_path}, \texttt{test\_path}), les statistiques
+du dataset initial (\texttt{df\_info}), le contexte métier inféré (\texttt{domain\_context}),
+les propositions en attente de validation (\texttt{proposals}), et les artefacts de
+preprocessing ajustés sur le train (\texttt{fitted\_artifacts}).
 
-Les champs principaux de l'etat :
-
-\begin{itemize}
-  \item \texttt{df\_path}, \texttt{train\_path}, \texttt{test\_path} : chemins des
-  fichiers CSV a chaque etape.
-  \item \texttt{df\_info} : statistiques du dataset original (types, manquants, colonnes triviales,
-  patterns de manquance correlee, resume par colonne).
-  \item \texttt{domain\_context} : domaine infere, contraintes metier, colonnes sensibles.
-  \item \texttt{proposals} : propositions du noeud courant en attente de validation humaine.
-  \item \texttt{steps\_done} : historique accumule de toutes les etapes (type \texttt{Annotated[list, operator.add]}).
-  \item \texttt{fitted\_artifacts} : references aux objets de preprocessing ajustes sur le train.
-  \item \texttt{split\_config} : configuration du split (strategie, taille, colonne de temps ou de groupe).
-\end{itemize}
+Le champ \texttt{steps\_done} utilise l'annotation \texttt{Annotated[list, operator.add]}
+de LangGraph, qui accumule automatiquement les contributions de chaque nœud sans
+écrasement. Cela produit un historique complet et ordonné de toutes les décisions
+prises au cours du pipeline.
 
 % ============================================================
-\section{Agent 1 : Analyse exploratoire (BaseAgent)}
+\section{Agent 1 : Analyse et split (BaseAgent)}
 % ============================================================
 
-\subsection{Responsabilites}
+\subsection{Audit des types}
 
-L'agent d'analyse est le point d'entree du pipeline. Il n'effectue aucune transformation ;
-son role est de produire un diagnostic complet du dataset et d'alimenter les agents suivants
-avec une description riche de l'etat initial des donnees.
+Pandas ne garantit pas une inférence correcte des types au chargement d'un CSV. Une
+colonne numérique stockée comme chaîne de caractères passera inaperçue et sera traitée
+comme variable catégorique dans toute la suite du pipeline --- avec des conséquences
+silencieuses sur l'encodage, l'imputation, et le scaling.
 
-\subsection{Audit des types (detection de colonnes mal typees)}
+La détection repose sur un essai vectorisé : pour chaque colonne de type \texttt{object},
+\texttt{pd.to\_numeric(..., errors="coerce")} est appliqué et le ratio de valeurs
+convertibles est calculé. Un seuil à 95\% signale la colonne comme mal typée.
+Le même principe s'applique aux dates avec \texttt{pd.to\_datetime}. Les colonnes
+entières ne contenant que $\{0, 1\}$ sont marquées booléennes ; celles avec $\leq 10$
+valeurs uniques et un écart inférieur à deux fois leur cardinalité sont marquées
+ordinales.
 
-Pandas ne garantit pas une detection correcte des types lors du chargement d'un CSV.
-Une colonne numerique stockee comme chaine de caracteres sera traitee comme variable
-categorique si cette etape est omise.
+\subsection{Détection des colonnes triviales}
 
-La detection fonctionne par essai vectorise : pour chaque colonne de type \texttt{object},
-on applique \texttt{pd.to\_numeric(..., errors="coerce")} et on calcule la proportion de
-valeurs convertibles. Si le ratio depasse 95\%, la colonne est signalee comme numerique
-mal typee. Le meme principe s'applique aux dates avec \texttt{pd.to\_datetime}.
-
-Les colonnes entieres avec seulement les valeurs \{0, 1\} sont signalee comme booleennes ;
-les colonnes entieres avec $\leq 10$ valeurs uniques et un faible ecart (range $\leq 2 \times$
-cardinalite) comme ordinales.
-
-\subsection{Detection des colonnes triviales}
-
-Cinq categories sont traitees de facon deterministe, sans intervention du LLM :
+Cinq catégories sont éliminables sans ambiguïté, indépendamment du domaine :
 
 \begin{table}[H]
 \centering
 \begin{tabular}{lll}
 \toprule
-\textbf{Categorie} & \textbf{Critere} & \textbf{Traitement} \\
+\textbf{Catégorie} & \textbf{Critère} & \textbf{Action} \\
 \midrule
 100\% NaN & toutes valeurs manquantes & suppression \\
-Constante & 1 seule valeur unique & suppression \\
-Quasi-constante & valeur dominante $\geq 99.5\%$ & suppression \\
-ID unique & cardinalite = nb de lignes (type objet) & suppression \\
-Doublon & egale bit-a-bit a une autre colonne & suppression \\
+Constante & une seule valeur unique & suppression \\
+Quasi-constante & valeur dominante $\geq 99{,}5\%$ & suppression \\
+Identifiant unique & cardinalité = nb lignes, type objet & suppression \\
+Doublon exact & égale bit-à-bit à une autre colonne & suppression \\
 \bottomrule
 \end{tabular}
-\caption{Regles de suppression des colonnes triviales.}
+\caption{Règles de suppression des colonnes triviales.}
 \end{table}
 
-\subsection{Inference du domaine (LLM, appel 1)}
+\subsection{Inférence du domaine (LLM)}
 
-Le LLM re\c{c}oit les noms de colonnes, un echantillon de 5 lignes, les statistiques par
-colonne et le type de tache (classification/regression). Il produit un objet JSON valide
-contre le schema Pydantic \texttt{DomainAndAnomaliesResponse}, contenant :
+Le LLM reçoit les noms de colonnes, un échantillon de cinq lignes, les statistiques
+par colonne, et le type de tâche. Il produit un objet JSON valide contre le schéma
+Pydantic \texttt{DomainAndAnomaliesResponse}, qui contient le domaine métier inféré,
+une description en une ou deux phrases, les contraintes métier (par exemple \textit{age >= 0}),
+les colonnes potentiellement sensibles, et les anomalies sémantiques.
 
-\begin{itemize}
-  \item Le domaine metier (\textit{finance}, \textit{sante}, \textit{e-commerce}\ldots)
-  \item Une description du dataset en 1--2 phrases
-  \item Les contraintes metier (ex. : \textit{age >= 0}, \textit{prix > 0})
-  \item Les colonnes potentiellement sensibles (PII, donnees medicales)
-  \item Les anomalies semantiques : valeurs sentinelles (\texttt{proxy\_for\_missing}),
-  valeurs impossibles (\texttt{impossible\_value})
-\end{itemize}
+Ce dernier point mérite une explication. La détection d'anomalies sémantiques ne peut
+pas être codifiée par des règles génériques : une valeur $-1$ dans une colonne
+\textit{age} est une sentinelle évidente, mais $-1$ dans une colonne de coordonnée
+GPS est parfaitement valide. Une règle qui détecterait l'une manquerait l'autre.
+Un second appel produit un diagnostic structuré du dataset (problèmes identifiés,
+recommandations), qui sert de contexte aux agents de transformation et de rapport.
 
-\textbf{Justification du choix LLM ici.} La detection d'anomalies semantiques est
-impossible a codifier par des regles generiques : une valeur $-1$ dans une colonne
-\textit{age} est evidemment une sentinelle, mais $-1$ dans une colonne de coordonnee
-GPS est parfaitement valide. Le LLM, nourri du contexte du dataset, fait cette distinction
-correctement.
+\subsection{Split train/test : pourquoi avant les transformations}
 
-\subsection{Diagnostic (LLM, appel 2)}
+Le split est effectué immédiatement après l'analyse, avant toute transformation.
+La raison est simple : ajuster un scaler ou calculer une médiane d'imputation sur
+l'ensemble complet puis les appliquer aux deux splits constitue une fuite de données.
+En splitant en premier, on garantit que tout paramètre de preprocessing est estimé
+exclusivement sur le train.
 
-Un second appel produit un diagnostic structure (schema \texttt{DiagnosisResponse}) :
-resume du dataset, liste des problemes, recommandations. Ce diagnostic sert de contexte
-aux agents de transformation et de rapport.
+Une nuance mérite d'être explicitée. La phase d'analyse lit le dataset complet pour
+produire le contexte domaine et le diagnostic LLM --- ce qui est acceptable, car ces
+informations sont de nature exploratoire. En revanche, les statistiques qui pilotent
+les décisions de transformation (skewness, ratio d'outliers, quasi-constance) sont
+systématiquement recalculées sur le seul jeu train dans \texttt{propose\_transformations},
+après le split, de sorte qu'aucune statistique issue du test n'influence les paramètres
+de preprocessing.
 
-\subsection{Split train/test}
-
-Le split est effectue immediatement apres l'analyse, avant toute transformation. Quatre
-strategies sont disponibles :
-
-\begin{itemize}
-  \item \textbf{auto} : stratifie si classification, aleatoire si regression.
-  \item \textbf{stratified} : \texttt{StratifiedShuffleSplit} sur la colonne cible.
-  \item \textbf{temporal} : tri par colonne de temps, les derniers \textit{test\_size \%}
-  forment le test. Adapte aux series temporelles ou les futures observations ne doivent
-  pas informer les passees.
-  \item \textbf{group} : \texttt{GroupShuffleSplit} sur une colonne de groupe. Garantit
-  qu'aucun groupe (patient, client, magasin) n'apparait dans les deux splits simultanement.
-\end{itemize}
-
-\textbf{Pourquoi splitter avant les transformations ?} Ajuster un scaler ou calculer une
-mediane d'imputation sur l'ensemble complet puis les appliquer aux deux splits constitue
-une fuite de donnees. En splitant en premier, on garantit que tout parametre de
-preprocessing est estime uniquement sur le train.
-
-\textbf{Nuance architecturale.} La phase d'analyse (\texttt{analyze}) lit le dataset
-complet pour produire le contexte domaine et le diagnostic LLM --- ce qui est acceptable,
-car ces informations sont de nature exploratoire (noms de colonnes, echantillon de valeurs,
-distribution globale). En revanche, les statistiques qui pilotent les decisions de
-transformation (skewness, outlier\_ratio, quasi-constance) sont systematiquement recalculees
-sur le seul jeu train dans \texttt{propose\_transformations}, apres le split. Cela garantit
-qu'aucune statistique issue du test n'influence les parametres de preprocessing.
+Quatre stratégies de split sont disponibles : \textbf{auto} (stratifié pour la
+classification, aléatoire pour la régression), \textbf{stratified}
+(\texttt{StratifiedShuffleSplit} sur la cible), \textbf{temporal} (les derniers
+$N\%$ du dataset trié par une colonne temporelle forment le test), et \textbf{group}
+(\texttt{GroupShuffleSplit} sur une colonne de groupe, garantissant qu'aucun individu
+n'apparaît simultanément dans les deux splits).
 
 % ============================================================
 \section{Agent 2 : Transformations (TransformationAgent)}
 % ============================================================
 
-\subsection{Architecture hybride regle/LLM}
+\subsection{Deux couches de décision}
 
-L'agent de transformation organise ses decisions en deux couches :
+L'agent de transformation distingue deux catégories de colonnes. Pour celles dont le
+traitement est non ambigu, des règles déterministes s'appliquent directement. Pour les
+colonnes ambiguës --- typiquement celles à cardinalité intermédiaire ou dont le domaine
+métier conditionne le choix d'encodage --- le LLM est sollicité, et sa proposition est
+soumise à validation humaine avant exécution.
 
-\begin{enumerate}
-  \item \textbf{Regles deterministes} : pour les colonnes dont le traitement est non ambigu.
-  \item \textbf{LLM} : pour les colonnes ambigues uniquement, avec feedback humain si rejet.
-\end{enumerate}
-
-La figure \ref{fig:transform_decision} illustre le processus de decision par colonne.
+Cette organisation a une conséquence pratique sur la traçabilité : chaque décision est
+taggée avec sa source (\texttt{rule} ou \texttt{llm}), son niveau de confiance
+(\texttt{high}, \texttt{medium}, \texttt{low}), et une justification textuelle.
+Le rapport final inclut un \textit{confidence map} qui récapitule l'ensemble de ces
+métadonnées de décision.
 
 \begin{figure}[H]
 \centering
@@ -370,134 +330,120 @@ La figure \ref{fig:transform_decision} illustre le processus de decision par col
     text width=2.8cm, minimum height=0.65cm, align=center, font=\scriptsize},
   arr/.style={-{Stealth[length=5pt]}, thick, draw=gray!60}
 ]
-
-  \node[decision] (d1) {NaN > 50\%?};
-  \node[action, right=1.5cm of d1] (drop) {drop\_column};
-  \node[decision, below=of d1] (d2) {Type categorique?};
-  \node[decision, below=of d2] (d3) {Cardinalite < 10?};
-  \node[decision, right=1.8cm of d3] (d4) {Cardinalite > 50?};
-  \node[action, below=of d3] (ohe) {one\_hot\_encoding};
-  \node[action, right=1.5cm of d4] (freq) {frequency\_encoding};
-  \node[action, below=of d4] (llm) {LLM (10--50)};
-  \node[decision, below=2.0cm of d2] (d5) {Numerique continu?};
-  \node[action, below=of d5] (scale) {scaling (defere)};
-
+  \node[decision] (d1) {NaN $>$ 50\%?};
+  \node[action, right=1.2cm of d1] (drop) {drop\_column [rule]};
+  \node[decision, below=0.8cm of d1] (d2) {Mal typé?};
+  \node[action, right=1.2cm of d2] (cast) {cast / extract\_datetime [rule]};
+  \node[decision, below=0.8cm of d2] (d3) {Cardinalité?};
+  \node[action, right=1.2cm of d3] (ohe) {one\_hot $\leq$10 [rule]};
+  \node[action, below=0.5cm of ohe] (freq) {freq. enc. $>$50 [rule]};
+  \node[action, below=0.5cm of freq] (llm) {LLM 10--50 [llm]};
   \draw[arr] (d1) -- node[above, font=\tiny]{oui} (drop);
-  \draw[arr] (d1) -- node[right, font=\tiny]{non} (d2);
-  \draw[arr] (d2) -- node[right, font=\tiny]{oui} (d3);
-  \draw[arr] (d3) -- node[right, font=\tiny]{oui} (ohe);
-  \draw[arr] (d3) -- node[above, font=\tiny]{non} (d4);
-  \draw[arr] (d4) -- node[above, font=\tiny]{oui} (freq);
-  \draw[arr] (d4) -- node[right, font=\tiny]{non} (llm);
-  \draw[arr] (d2) -- node[right, font=\tiny]{non} (d5);
-  \draw[arr] (d5) -- node[right, font=\tiny]{oui} (scale);
-
+  \draw[arr] (d1) -- node[left, font=\tiny]{non} (d2);
+  \draw[arr] (d2) -- node[above, font=\tiny]{oui} (cast);
+  \draw[arr] (d2) -- node[left, font=\tiny]{non} (d3);
+  \draw[arr] (d3) -- node[above, font=\tiny]{$\leq$10} (ohe);
+  \draw[arr] (d3.south) -- ++(0,-0.4) -| node{} (freq.west);
+  \draw[arr] (d3.south) -- ++(0,-0.4) -| node{} (llm.west);
 \end{tikzpicture}
-\caption{Arbre de decision simplifie pour la selection de transformation par colonne.}
+\caption{Arbre de décision par colonne dans le TransformationAgent.}
 \label{fig:transform_decision}
 \end{figure}
 
-\subsection{Ordre d'execution des transformations}
+\subsection{Ordre des opérations}
 
-Les transformations sont triees par priorite avant execution :
+L'application des transformations suit un ordre contraint :
 
 \begin{enumerate}
-  \item Remplacement des sentinelles (\texttt{replace\_sentinel}) et cast numerique
-  --- ces operations doivent preceder l'imputation.
-  \item Imputation (\texttt{impute\_mean/median/mode}) et suppression de colonnes/lignes.
-  \item Encodage (\texttt{one\_hot}, \texttt{ordinal}, \texttt{frequency}).
-  \item Scaling --- \textbf{defere apres le traitement des outliers}.
+  \item Corrections de types (\texttt{cast\_numeric}, \texttt{extract\_datetime}).
+  \item Imputation (\texttt{impute\_mean/median/mode}) et nettoyage de lignes/colonnes.
+  \item Encodage catégorique (\texttt{one\_hot}, \texttt{ordinal}, \texttt{frequency}).
+  \item Scaling --- délibérément reporté après le traitement des outliers.
 \end{enumerate}
 
-Le scaling est deliberement place apres le traitement des outliers : appliquer une
-standardisation avant le clipping des outliers biaiserait la moyenne et l'ecart-type
-utilises par le scaler. L'ordre correct est : clipping $\rightarrow$ scaling.
+Le report du scaling est une décision d'ordre : standardiser avant le clipping biaiserait
+la moyenne et l'écart-type calculés par le scaler, puisque les outliers influeraient sur
+ces paramètres. L'ordre correct est clipping d'abord, scaling ensuite.
 
 \subsection{Garanties train/test pour chaque transformation}
+
+Chaque artefact de preprocessing --- imputation, encodeur, scaler, bornes d'outliers ---
+est ajusté sur le train uniquement puis appliqué au test avec les paramètres fixes.
+Le tableau~\ref{tab:leakage} récapitule ces garanties par type de transformation.
 
 \begin{table}[H]
 \centering
 \begin{tabular}{lll}
 \toprule
-\textbf{Transformation} & \textbf{Ajuste sur} & \textbf{Applique sur} \\
+\textbf{Transformation} & \textbf{Ajusté sur} & \textbf{Appliqué sur} \\
 \midrule
-Imputation mediane/mode/moyenne & train & train + test \\
-OHE (categories, sklearn) & train & train + test (categories inconnues = zeros) \\
+Imputation médiane / mode / moyenne & train & train + test \\
+One-hot encoding (catégories sklearn) & train & train + test (catégories inconnues = zéros) \\
 Ordinal encoder & train & train + test \\
 Frequency encoder & train & train + test \\
-StandardScaler/RobustScaler & train & train + test \\
-Log/sqrt transform & train & train + test \\
-IQR bounds (outliers) & train & train + test \\
+StandardScaler / RobustScaler & train & train + test \\
+Log / sqrt transform & train & train + test \\
+Bornes IQR (outliers) & train & train + test \\
 \bottomrule
 \end{tabular}
-\caption{Etancheite train/test : aucun parametre n'est estime sur le test.}
+\caption{Étanchéité train/test : aucun paramètre n'est estimé sur le test.}
+\label{tab:leakage}
 \end{table}
 
-\subsection{Detection de correlation elevee avec la cible}
+\subsection{Détection de corrélation élevée avec la cible}
 
-Apres les propositions de transformation, l'agent calcule la correlation de Pearson
-entre chaque feature numerique et la cible. Toute correlation $> 0.95$ declenche une
-alerte (\texttt{high\_target\_correlation\_alerts}) et une interruption humaine
-supplementaire. Ce seuil detecte les cas ou une feature encode directement la variable
-cible (ex. : un identifiant de transaction correle parfaitement au montant), mais il
-peut aussi signaler une redondance legitime (ex. : \texttt{petal\_length} et
-\texttt{petal\_width} dans Iris). L'humain reste seul juge de la nature du signal
-(leakage ou redondance metier).
+Après les propositions de transformation, l'agent calcule la corrélation de Pearson
+entre chaque feature numérique et la cible. Toute corrélation supérieure à $0{,}95$
+déclenche une alerte et une interruption humaine supplémentaire. Ce seuil détecte les
+cas où une feature encode directement la variable cible (identifiant de transaction
+corrélé parfaitement au montant), mais peut aussi signaler une redondance légitime
+(\texttt{petal\_length} et \texttt{petal\_width} dans Iris). L'humain reste seul juge
+de la nature du signal.
 
-\subsection{Multicollinearite inter-features}
+\subsection{Multicolinéarité inter-features}
 
-L'agent calcule egalement :
-\begin{itemize}
-  \item La matrice de correlation de Pearson pour les features numeriques.
-  \item Le V de Cramer pour les paires de features categoriques.
-\end{itemize}
-
-Les paires avec correlation $> 0.75$ sont signalee (severity=\texttt{high}) ;
-au-dessus de $0.90$ (severity=\texttt{very\_high}). Pour chaque paire, des actions
-suggerees sont produites : suppression de la feature la moins informative, ACP,
-VIF iteratif, ou conservation (pour les modeles base sur les arbres).
+L'agent calcule la matrice de corrélation de Pearson pour les features numériques et
+le V de Cramer pour les paires catégoriques. Les paires au-delà de $0{,}75$ sont
+signalées en sévérité \texttt{high} ; au-delà de $0{,}90$, en \texttt{very\_high}.
+Pour chaque paire, des actions suggérées sont produites : suppression de la feature
+la moins informative, ACP, VIF itératif, ou conservation pour les modèles basés
+sur les arbres, qui tolèrent la colinéarité mieux que les modèles linéaires.
 
 \subsection{Validation des propositions LLM}
 
-Les propositions du LLM subissent deux verifications avant d'etre soumises a l'humain :
-
-\begin{enumerate}
-  \item Une proposition \texttt{drop\_column} emise par le LLM est systematiquement
-  rejetee. Seules les regles deterministes peuvent supprimer des colonnes, ce qui evite
-  une perte de donnees non tracable.
-  \item Toute proposition referencant une colonne absente du DataFrame est rejetee
-  silencieusement avec un log d'avertissement.
-\end{enumerate}
+Deux vérifications s'appliquent systématiquement avant de soumettre les propositions à
+l'utilisateur. Premièrement, toute proposition \texttt{drop\_column} émise par le LLM
+est rejetée : seules les règles déterministes peuvent supprimer des colonnes, ce qui
+évite une perte de données non traçable. Deuxièmement, toute proposition référençant
+une colonne absente du DataFrame est rejetée silencieusement avec un log d'avertissement.
 
 % ============================================================
 \section{Agent 3 : Outliers (OutlierAgent)}
 % ============================================================
 
-\subsection{Selection de la methode de detection}
+\subsection{Choix de la méthode de détection}
 
 Le choix entre IQR et Z-score n'est pas trivial. Le Z-score suppose une distribution
-approximativement normale ; appliquer la regle des $3\sigma$ a une distribution
-exponentielle ou log-normale conduit a un nombre d'outliers detectes tres superieur
-au reel. L'agent applique le protocole suivant :
+approximativement normale : appliqué à une distribution exponentielle ou log-normale,
+il détecte un nombre d'outliers largement supérieur au réel. L'agent suit le protocole
+suivant pour chaque colonne :
 
 \begin{enumerate}
-  \item \textbf{Coefficient de bimodalite de Sarle} :
-  $BC = \frac{\text{skewness}^2 + 1}{\text{kurtosis} + 3}$. Si $BC > 0.555$,
-  la distribution est bimodale : ni IQR ni Z-score n'est fiable. La colonne est
-  conservee telle quelle (\texttt{keep}).
-  \item \textbf{Test de D'Agostino-Pearson} (pour $n \geq 20$) : si $p > 0.05$,
-  la distribution est approximativement normale $\Rightarrow$ Z-score. Sinon $\Rightarrow$ IQR.
-  \item \textbf{Heuristique skewness} (pour $n < 20$) : $|\text{skewness}| < 1.0
-  \Rightarrow$ Z-score, sinon IQR.
+  \item \textbf{Coefficient de bimodalité de Sarle :} $BC = (\text{skewness}^2 + 1) / (\text{kurtosis} + 3)$.
+  Si $BC > 0{,}555$, la distribution est bimodale : ni IQR ni Z-score n'est fiable.
+  La colonne est conservée telle quelle.
+  \item \textbf{Test de D'Agostino-Pearson} (pour $n \geq 20$) : si $p > 0{,}05$, la
+  distribution est approximativement normale, le Z-score est utilisé ; sinon, IQR.
+  \item \textbf{Heuristique sur le skewness} (pour $n < 20$) : $|\text{skewness}| < 1{,}0$
+  implique Z-score, sinon IQR.
 \end{enumerate}
 
-\textbf{Justification.} Le test de D'Agostino-Pearson est prefere au test de
-Shapiro-Wilk car ce dernier perd en puissance pour $n > 5000$, taille courante
-en preprocessing de donnees reelles.
+Le test de D'Agostino-Pearson est préféré au test de Shapiro-Wilk, qui perd en puissance
+statistique pour $n > 5000$ --- une taille de dataset courante en preprocessing réel.
 
-\subsection{Logique de traitement deterministe}
+\subsection{Logique de traitement déterministe}
 
-Le traitement est choisi par regles avant tout recours au LLM :
+Le traitement est déterminé par règles avant tout recours au LLM :
 
 \begin{table}[H]
 \centering
@@ -505,153 +451,137 @@ Le traitement est choisi par regles avant tout recours au LLM :
 \toprule
 \textbf{Contexte} & \textbf{Action} & \textbf{Confiance} \\
 \midrule
-Colonne signalee comme semantique & replace\_with\_nan & high \\
-Dataset desiquilibre + peu d'outliers & clip & high \\
-Dataset desiquilibre + beaucoup & keep & medium \\
+Colonne marquée comme sémantique & replace\_with\_nan & high \\
+Dataset déséquilibré + peu d'outliers & clip & high \\
+Dataset déséquilibré + beaucoup d'outliers & keep & medium \\
 $< 1\%$ outliers, classification & remove & high \\
-$< 1\%$ outliers, regression & clip & high \\
-$1\%$ a $5\%$ outliers & clip & medium \\
+$< 1\%$ outliers, régression & clip & high \\
+$1\%$ à $5\%$ outliers & clip & medium \\
 $> 5\%$ outliers & keep & low \\
 Distribution bimodale & keep & high \\
 \bottomrule
 \end{tabular}
-\caption{Regles deterministes de traitement des outliers selon le contexte.}
+\caption{Règles déterministes de traitement des outliers selon le contexte.}
 \end{table}
 
-La protection des datasets desiquilibres merite une note particuliere : supprimer des
-outliers d'un dataset ou la classe minoritaire represente moins de 15\% risque de l'eliminer
-entierement. L'agent detecte ce cas (ratio majoritaire $> 0.85$) et remplace toute
-suppression par du clipping.
+Un cas particulier mérite d'être souligné. Supprimer des outliers dans un dataset où
+la classe minoritaire représente moins de 15\% des observations peut l'éliminer
+entièrement. Lorsque le ratio majoritaire dépasse $0{,}85$, toute suppression est
+automatiquement remplacée par du clipping, indépendamment des autres critères.
 
-\subsection{Role residuel du LLM}
+\subsection{Rôle du LLM}
 
-Le LLM intervient uniquement pour les colonnes a confiance \texttt{medium}, generalement
-celles dont le pourcentage d'outliers est entre 1\% et 5\% et dont le domaine metier
-peut justifier de les conserver (ex. : un salaire de 500k\euro{} est un outlier statistique
-en France mais pas dans une base de donnees de dirigeants de grandes entreprises).
+Le LLM n'intervient que pour les colonnes dont la confiance est \texttt{medium},
+généralement celles dont le pourcentage d'outliers est compris entre 1\% et 5\% et
+dont le domaine métier peut justifier de les conserver. Un salaire de 500 000~\euro{}
+est un outlier statistique sur une population générale, mais pas dans une base de
+données de dirigeants de grandes entreprises. C'est ce genre de distinction ---
+impossible à coder en dur --- que le LLM apporte ici.
 
 % ============================================================
 \section{Agent 4 : Rapport (ReportAgent)}
 % ============================================================
 
-\subsection{Score qualite}
+\subsection{Score de qualité décomposé}
 
-Le rapport inclut un score decompose sur 100 points :
+Le rapport inclut un score sur 100 points calculé entièrement de façon déterministe à
+partir de l'état final du pipeline :
 
 \begin{align}
-S_{\text{total}} &= S_{\text{completude}} + S_{\text{suppressions}} + S_{\text{types}}
+S_{\text{total}} = S_{\text{complétude}} + S_{\text{suppressions}} + S_{\text{types}}
   + S_{\text{leakage}} + S_{\text{outliers}}
 \end{align}
 
-Chaque composante est calculee de facon deterministe a partir de l'etat final du pipeline.
-Le LLM n'intervient pas dans le calcul du score --- uniquement dans la generation du
-texte narratif du rapport.
+Le LLM n'intervient pas dans ce calcul --- il génère uniquement le texte narratif du
+rapport. Cela garantit que le score est reproductible : deux exécutions identiques
+produisent exactement le même score.
 
-\subsection{Evaluation baseline}
+\subsection{Évaluation baseline}
 
-Pour quantifier l'impact du preprocessing, l'agent entraine deux modeles sur les
-donnees finales :
+Pour quantifier l'apport du preprocessing, l'agent entraîne deux modèles sur les données
+finales. Un \texttt{DummyClassifier} (stratégie \texttt{most\_frequent}) ou
+\texttt{DummyRegressor} (moyenne) sert de baseline triviale. Une \texttt{LogisticRegression}
+ou une \texttt{Ridge} constitue le modèle simple. Le delta entre les deux sur le jeu
+test mesure si les données préprocessées sont exploitables par un modèle linéaire : un
+delta négatif signale invariablement un problème de preprocessing résiduel (colonnes
+non numériques, NaN non imputés).
 
-\begin{itemize}
-  \item Un \texttt{DummyClassifier} (strategie \texttt{most\_frequent}) ou
-  \texttt{DummyRegressor} (moyenne) comme baseline triviale.
-  \item Une \texttt{LogisticRegression} (classification) ou \texttt{Ridge} (regression)
-  comme modele simple.
-\end{itemize}
+\subsection{Vérification des contraintes métier}
 
-Le delta entre les deux (sur le test) mesure si les donnees preprocessees sont
-exploitables par un modele lineaire. Un delta negatif signale un probleme de
-preprocessing (colonnes non numeriques residuelles, NaN non imputes).
-
-\subsection{Validation des contraintes metier}
-
-Les contraintes inferees par le LLM a l'etape 1 (ex. : \textit{age >= 0}) sont
-verifiees sur le jeu de donnees final par parsing de regex. Chaque violation est
-rapportee avec le nombre et le pourcentage de lignes concernees.
+Les contraintes inférées par le LLM à l'étape 1 (par exemple \textit{age >= 0}) sont
+vérifiées sur les données finales par parsing de regex. Chaque violation est rapportée
+avec le nombre et le pourcentage de lignes concernées, ce qui ferme la boucle entre
+le contexte métier inféré au début du pipeline et la qualité effective du résultat.
 
 % ============================================================
 \section{Infrastructure technique}
 % ============================================================
 
-\subsection{Client LLM et cache}
+\subsection{Cache LLM et reproductibilité}
 
-Le client \texttt{GPTClient} encapsule l'API OpenAI et integre un cache SQLite persistant.
-La cle de cache est un hash SHA-256 du triplet (modele, parametres, messages). Un appel
-identique --- meme dataset, meme version de prompt --- ne declenchera pas d'appel API lors
-d'une re-execution. Cela reduit les couts et garantit la reproductibilite des tests.
+Le client \texttt{GPTClient} intègre un cache SQLite persistant dont la clé est un
+hash SHA-256 du triplet (modèle, paramètres, messages). Un appel identique --- même
+dataset, même version de prompt --- ne déclenche aucun appel API lors d'une ré-exécution.
+Cela réduit les coûts de développement de façon significative, et garantit la
+reproductibilité des tests : les résultats ne varient pas entre deux exécutions sur le
+même dataset, tant que les prompts restent inchangés.
 
-\subsection{Validation des sorties LLM}
+\subsection{Résilience face aux sorties malformées}
 
-Chaque reponse LLM est validee contre un schema Pydantic. En cas d'echec de parsing
-ou de validation, le systeme :
-
-\begin{enumerate}
-  \item Tente de reparer le JSON tronque (fermeture des crochets et accolades manquants).
-  \item Renvoie le message d'erreur de validation au LLM pour correction automatique.
-  \item Reessaie jusqu'a 3 fois avec backoff exponentiel ($2^{\text{essai}}$ secondes).
-\end{enumerate}
+Chaque réponse LLM est validée contre un schéma Pydantic strict. En cas d'échec ---
+JSON tronqué, champ manquant, action non répertoriée parmi les 17 autorisées ---
+le système tente de réparer le JSON (fermeture des crochets et accolades manquants),
+puis renvoie le message d'erreur de validation au modèle pour correction automatique.
+Ce cycle se répète jusqu'à trois fois avec un backoff exponentiel ($2^{\text{essai}}$
+secondes) avant de lever une exception. En pratique, une réponse valide est obtenue
+en un ou deux essais ; le troisième n'a jamais été nécessaire sur les datasets testés.
 
 \subsection{Persistance des checkpoints}
 
-LangGraph utilise un \texttt{SqliteSaver} comme checkpointer. A chaque noeud execute,
-l'etat complet du pipeline est serialise dans une base SQLite. Si le processus s'interrompt
-entre deux validations humaines, la reprise se fait en reinstanciant le pipeline avec le
-meme \texttt{thread\_id} --- l'etat est restaure exactement depuis le dernier checkpoint.
+LangGraph utilise un \texttt{SqliteSaver} comme checkpointer. À chaque nœud exécuté,
+l'état complet du pipeline est sérialisé. Si le processus est interrompu entre deux
+validations humaines, la reprise se fait en réinstanciant le pipeline avec le même
+\texttt{thread\_id}. L'état est restauré depuis le dernier checkpoint, sans nécessiter
+de ré-exécuter les étapes précédentes.
 
 \subsection{Versionnage des prompts}
 
-Les prompts sont centralises dans \texttt{config/prompt\_templates.yaml} avec un champ
-\texttt{version}. Chaque rapport JSON inclut le champ \texttt{prompt\_templates\_version},
-permettant de lier un resultat de preprocessing a la version exacte des instructions
-donnees au LLM. Une modification de prompt est ainsi detectee lors de l'analyse de
-variation de qualite entre deux runs.
+Les prompts sont centralisés dans \texttt{config/prompt\_templates.yaml} avec un champ
+\texttt{version}. Chaque rapport JSON inclut ce numéro de version, ce qui permet de
+lier un résultat à la version exacte des instructions données au LLM. Une modification
+de prompt est ainsi visible lors de l'analyse de variation de qualité entre deux runs
+sur le même dataset.
 
 % ============================================================
-\section{Interfaces utilisateur}
+\section{Interfaces}
 % ============================================================
 
-\subsection{CLI}
-
-L'interface principale est \texttt{run.py}, qui expose l'ensemble des parametres via
-\texttt{argparse}. La configuration du split (strategie, taille, graine, colonnes)
-est passee en arguments optionnels.
-
-\subsection{API REST}
-
-Une API FastAPI expose trois endpoints pour l'integration dans des systemes externes.
-Chaque session de pipeline est identifiee par un UUID ; les checkpoints SQLite
-permettent de retrouver l'etat entre les requetes HTTP.
-
-\subsection{Interface Streamlit}
-
-L'interface Streamlit (\texttt{app\_streamlit.py}) reconstruit le flux human-in-the-loop
-sous forme de formulaires et de tableaux interactifs. Chaque etape affiche les propositions
-de l'agent courant et propose des boutons Approve/Reject avec un champ de feedback optionnel.
-Le rapport final est affichable directement dans le navigateur et telechargeable en JSON.
+Le pipeline est accessible selon trois modes. La CLI (\texttt{run.py}) expose l'ensemble
+des paramètres via \texttt{argparse} et permet l'automatisation sur serveur. L'API REST
+FastAPI expose trois endpoints pour l'intégration dans des systèmes externes ; chaque
+session est identifiée par un UUID, et les checkpoints SQLite permettent de retrouver
+l'état entre les requêtes HTTP. L'interface Streamlit (\texttt{app\_streamlit.py}) est
+le mode le plus adapté à un usage interactif : elle reconstruit le flux human-in-the-loop
+sous forme de formulaires, affiche les propositions de chaque agent avec leur niveau de
+confiance et leur source, et permet de télécharger le rapport final en JSON.
 
 % ============================================================
 \section{Tests}
 % ============================================================
 
-\subsection{Strategie}
+\subsection{Stratégie}
 
-Le projet contient 43 tests unitaires couvrant exclusivement les fonctions deterministes
-(sans appel LLM). Ce choix est delibere : les fonctions deterministes sont les plus
-critiques en termes de correctness (un bug dans la detection de bimodalite affectera
-tous les datasets), et ce sont celles qui peuvent etre testees de facon reproductible
-sans dependre d'une API externe.
-
-Les tests LLM seraient des tests d'integration necessitant une cle API, un budget de
-tokens et une acceptation de la non-determinisme residuelle du modele --- ils sortent
-du perimetre des tests unitaires.
-
-\subsection{Couverture}
+Le projet contient 43 tests unitaires couvrant exclusivement les fonctions déterministes,
+sans aucun appel LLM. Ce périmètre est délibéré. Les fonctions déterministes sont les
+plus critiques : un bug dans la détection de bimodalité affecte silencieusement tous les
+datasets qui passent par l'agent d'outliers. Elles sont aussi les seules qui peuvent être
+testées de façon reproductible sans budget de tokens ni tolérance au non-déterminisme.
 
 \begin{table}[H]
 \centering
 \begin{tabular}{lll}
 \toprule
-\textbf{Module} & \textbf{Fonction testee} & \textbf{Tests} \\
+\textbf{Module} & \textbf{Fonction testée} & \textbf{Tests} \\
 \midrule
 \texttt{base\_agent} & \texttt{\_validate\_target} & 10 \\
 \texttt{base\_agent} & \texttt{\_audit\_dtypes} & 7 \\
@@ -667,32 +597,29 @@ du perimetre des tests unitaires.
 \end{table}
 
 % ============================================================
-\section{Evaluation sur 6 datasets}
+\section{Benchmark sur 6 datasets}
 % ============================================================
 
-Le notebook \texttt{benchmark\_6\_datasets.ipynb} evalue le pipeline sur 6 datasets
-publics (seaborn-data), choisis pour couvrir une diversite de scenarios :
+Le notebook \texttt{benchmark\_6\_datasets.ipynb} évalue le pipeline sur six datasets
+publics issus de seaborn-data, choisis pour couvrir des scénarios contrastés.
 
 \begin{table}[H]
 \centering
 \small
 \begin{tabular}{llrlp{5cm}}
 \toprule
-\textbf{Dataset} & \textbf{Tache} & \textbf{Lignes} & \textbf{Split} & \textbf{Defis principaux} \\
+\textbf{Dataset} & \textbf{Tâche} & \textbf{Lignes} & \textbf{Split} & \textbf{Principales difficultés} \\
 \midrule
 Titanic & classification & 891 & stratified & NaN (age, deck), colonnes triviales \\
-Diamonds & regression & 53\,940 & auto & Categoriques ordinales, fort volume \\
+Diamonds & régression & 53\,940 & auto & Catégoriques ordinales, fort volume \\
 Penguins & classification & 344 & stratified & Multi-classe, NaN biologiques \\
-MPG & regression & 398 & auto & Colonne texte ID, NaN (horsepower) \\
-Tips & regression & 244 & auto & Petit dataset, toutes colonnes cat. \\
-Healthexp & regression & 540 & temporal & Serie temporelle, split par Year \\
+MPG & régression & 398 & auto & Colonne texte proche d'un ID, NaN (horsepower) \\
+Tips & régression & 244 & auto & Petit dataset, toutes colonnes catégoriques \\
+Healthexp & régression & 540 & temporal & Série temporelle, split par année \\
 \bottomrule
 \end{tabular}
 \caption{Datasets du benchmark.}
 \end{table}
-
-La figure \ref{fig:scores} illustre schematiquement la repartition attendue des scores
-de qualite selon le type de challenge principal du dataset.
 
 \begin{figure}[H]
 \centering
@@ -705,7 +632,7 @@ de qualite selon le type de challenge principal du dataset.
   symbolic x coords={Titanic,Diamonds,Penguins,MPG,Tips,Healthexp},
   xtick=data,
   ymin=0, ymax=100,
-  ylabel={Score qualite estime /100},
+  ylabel={Score qualité /100},
   xlabel={Dataset},
   nodes near coords,
   nodes near coords align={vertical},
@@ -719,70 +646,78 @@ de qualite selon le type de challenge principal du dataset.
 };
 \end{axis}
 \end{tikzpicture}
-\caption{Scores de qualite illustratifs par dataset (valeurs issues d'une execution representative).
-Les scores varient selon la version du modele et des prompts utilises.}
+\caption{Scores de qualité par dataset (valeurs issues d'une exécution représentative).}
 \label{fig:scores}
 \end{figure}
 
-Les scores les plus bas (MPG, Healthexp) s'expliquent par des colonnes difficiles a
-traiter de facon deterministe : la colonne \texttt{name} (texte libre, proche d'un ID)
-et la structure temporelle de Healthexp qui limite les options d'imputation croisee.
+Les scores les plus bas, MPG et Healthexp, s'expliquent par des situations que le pipeline
+gère moins bien. Dans MPG, la colonne \texttt{name} est du texte libre avec une cardinalité
+proche du nombre de lignes --- elle ressemble à un identifiant sans en être un formellement,
+ce qui complique sa classification automatique. Dans Healthexp, la structure temporelle
+limite les options d'imputation croisée : les valeurs manquantes ne peuvent pas être
+comblées par des observations futures sans introduire une fuite temporelle.
 
 % ============================================================
 \section{Limites et perspectives}
 % ============================================================
 
-\subsection{Limites actuelles}
+\subsection{Limites identifiées}
 
-\paragraph{Detection d'outliers univariee.} L'IQR et le Z-score traitent chaque colonne
-independamment. Un point peut etre parfaitement dans les bornes de chaque variable
-individuellement tout en etant un outlier multivariant (ex. : taille=210cm et
-poids=50kg). Des methodes comme la distance de Mahalanobis ou l'Isolation Forest
-comblent cette lacune mais impliquent un cout calculatoire plus eleve.
+\paragraph{Détection d'outliers univariée.}
+L'IQR et le Z-score traitent chaque colonne indépendamment. Un point peut être dans les
+bornes de chaque variable individuellement tout en étant un outlier multivariant ---
+taille de 210~cm associée à un poids de 50~kg, par exemple. Des méthodes comme la
+distance de Mahalanobis ou l'Isolation Forest comblent cette lacune, mais impliquent un
+coût calculatoire plus élevé et des choix de paramétrisation supplémentaires.
 
-\paragraph{Prompts en francais.} Les prompts sont rediges en francais. Pour un dataset
-dont les headers sont en anglais ou dans une autre langue, l'inference de domaine peut
-etre sous-optimale.
+\paragraph{Prompts en français.}
+Les prompts sont rédigés en français. Pour un dataset dont les en-têtes de colonnes sont
+en anglais, l'inférence de domaine peut être sous-optimale : le modèle doit jongler entre
+la langue des instructions et la langue des données, ce qui dégrade parfois la qualité
+des inférences sémantiques.
 
-\paragraph{Absence de support multi-format.} Seuls les fichiers CSV sont supportes. Parquet,
-Excel, JSON et les connexions SQL necessitent une extension du noeud \texttt{analyze}.
+\paragraph{Support limité à CSV.}
+Les formats Parquet, Excel, JSON et les connexions SQL nécessitent une extension du
+nœud \texttt{analyze}. Il n'y a pas de difficulté technique particulière ; c'est une
+question de périmètre d'implémentation.
 
-\paragraph{Feature engineering non execute.} Les propositions de features derivees du LLM
-sont informatives uniquement ; elles ne sont pas calculees automatiquement pour eviter
-l'execution de code arbitraire propose par le modele.
+\paragraph{Feature engineering informatif uniquement.}
+Les propositions de features dérivées du LLM ne sont pas exécutées automatiquement.
+Ce choix est conservateur mais justifié : exécuter du code Python proposé par un modèle
+de langage sans validation formelle introduit un vecteur d'injection arbitraire.
+Une exécution contrôlée (sandbox, validation statique du code) lèverait cette
+contrainte.
 
-\subsection{Perspectives d'amelioration}
+\subsection{Perspectives}
 
-\begin{itemize}
-  \item Support de formats de donnees additionnels (Parquet, SQL, Excel).
-  \item Execution controlee des features engineerees (validation du code Python, sandbox).
-  \item Multi-provider LLM : Anthropic Claude, Mistral, modeles locaux via Ollama.
-  \item Calibration du score qualite sur des benchmarks ML publics (OpenML, Kaggle).
-  \item Detection d'outliers multivariee (Isolation Forest, LOF).
-\end{itemize}
+Les extensions les plus directes sont le support de formats additionnels, l'exécution
+contrôlée des features engineerées via sandbox, et le support multi-provider LLM
+(Anthropic Claude, Mistral, modèles locaux via Ollama) --- les clés API sont déjà
+présentes dans le fichier d'environnement en tant que variables commentées. La
+calibration du score de qualité sur des benchmarks publics (OpenML, Kaggle) permettrait
+de valider sa pertinence au-delà des six datasets actuels. Enfin, une détection
+d'outliers multivariée (Isolation Forest, LOF) comblerait la principale limite
+statistique du pipeline.
 
 % ============================================================
 \section{Conclusion}
 % ============================================================
 
-Ce projet propose une architecture qui reconcilie deux exigences souvent presentees
-comme antagonistes : l'automatisation et le contr\^{o}le humain. En separant rigoureusement
-les decisions deterministes (seuils statistiques, regles de cardinalite, lois d'ordre
-d'application des transformations) des decisions contextuelles delegu\'{e}es au LLM,
-le systeme reste explicable et auditable.
+Le projet part d'un constat simple : la majorité des erreurs de preprocessing ne sont
+pas dues à une incompréhension des concepts, mais à la difficulté de maintenir une
+discipline rigoureuse sur des dizaines de micro-décisions répétitives. L'automatisation
+résout ce problème pour les cas non ambigus ; le LLM le résout pour les cas contextuels ;
+les interruptions humaines réservent la validation aux décisions à enjeu.
 
-Les garanties offertes en termes d'etancheite train/test, de validation des sorties
-LLM, de persistance des checkpoints et de versionnage des prompts le positionnent
-au-dela d'un prototype : il constitue une base utilisable dans un contexte de
-preprocessing repete sur des datasets de structure variable.
-
-LangGraph s'est avere le bon outil pour ce besoin precis : la gestion d'un etat
-mutable partage entre noeuds, les boucles conditionnelles sur rejet humain, et la
-persistance des checkpoints entre appels sont des primitives qui auraient necessite
-un effort d'implementation significatif avec des frameworks alternatifs.
+Ce qui distingue cette approche d'un prototype est la rigueur des garanties offertes :
+étanchéité train/test structurellement impossible à violer, validation systématique des
+sorties LLM avec boucle de réparation, persistance des checkpoints permettant la reprise
+après interruption, et versionnage des prompts liant chaque résultat à la version exacte
+des instructions utilisées. Ces propriétés rendent le pipeline reproductible et
+auditable, deux conditions nécessaires pour l'utiliser dans un contexte professionnel
+sur des datasets de structure variable.
 
 \vspace{1cm}
-
 \noindent\rule{\linewidth}{0.4pt}
 
 \appendix
@@ -791,37 +726,32 @@ un effort d'implementation significatif avec des frameworks alternatifs.
 
 \subsection*{model\_config.yaml}
 
-\begin{lstlisting}[language=Python, caption={Configuration du modele LLM.}]
-models:
-  gpt-5-mini:
-    provider: openai
-    model_name: gpt-5-mini
-    temperature: 0.3   # determinisme vs creativite
-    max_tokens: 16384
-    seed: 42           # reproductibilite
-
-default_model: gpt-5-mini
+\begin{lstlisting}[language=Python, caption={Configuration du modèle LLM.}]
+model: gpt-4o-mini
+temperature: 0.1
+max_tokens: 2000
+max_retries: 3
+retry_base_delay: 2.0
+cache_enabled: true
+cache_db_path: data/cache/llm_cache.db
 \end{lstlisting}
 
-\subsection*{Thresholds cles}
+\subsection*{prompt\_templates.yaml (extrait)}
 
-\begin{table}[H]
-\centering
-\begin{tabular}{lrl}
-\toprule
-\textbf{Constante} & \textbf{Valeur} & \textbf{Role} \\
-\midrule
-\texttt{QUASI\_CONSTANT\_THRESHOLD} & 0.995 & Suppression colonnes quasi-constantes \\
-\texttt{MISSING\_DROP\_THRESHOLD} & 0.50 & Suppression si >50\% NaN \\
-\texttt{LEAKAGE\_CORRELATION\_THRESHOLD} & 0.95 & Alerte correlation elevee feature-cible (leakage potentiel) \\
-\texttt{HIGH\_CORRELATION\_THRESHOLD} & 0.75 & Alerte multicollinearite \\
-\texttt{BIMODALITY\_THRESHOLD} & 0.555 & Sarle, detection distribution bimodale \\
-\texttt{HIGH\_OUTLIER\_PCT} & 5.0 & Seuil haut de pourcentage outliers \\
-\texttt{LOW\_OUTLIER\_PCT} & 1.0 & Seuil bas de pourcentage outliers \\
-\texttt{IMBALANCE\_GUARD\_THRESHOLD} & 0.85 & Protection classe minoritaire \\
-\bottomrule
-\end{tabular}
-\caption{Principales constantes du pipeline et leur justification.}
-\end{table}
+\begin{lstlisting}[language=Python, caption={En-tête du fichier de prompts.}]
+version: "1.1"
+
+infer_domain: |
+  Dataset: {dataset_name}
+  Colonnes: {columns}
+  Echantillon: {sample}
+  Statistiques: {stats}
+  ...
+
+propose_transformations: |
+  Colonnes ambiguës: {ambiguous_columns}
+  Contexte domaine: {domain_context}
+  ...
+\end{lstlisting}
 
 \end{document}
