@@ -1,183 +1,169 @@
-# Generative AI Preprocessing Agent
+# Human-in-the-Loop Data Preparation
 
-Un utilitaire CLI et Dashboard Web (via Streamlit) conçu pour nettoyer, transformer et préparer vos datasets avant modélisation de manière semi-automatisée, à l'aide de LangGraph et OpenAI.
+A reproducible Python pipeline for reviewing and preparing tabular datasets before
+model development. Deterministic code performs splitting, fitting and validation;
+an optional LLM is limited to contextual suggestions that a person must approve.
 
-L'objectif de cet outil n'est pas de jeter du LLM à l'aveugle sur des tableaux de données. Il orchestre plutôt un ensemble de **règles déterministes strictes** (pour les tâches évidentes comme la gestion des colonnes vides ou de l'imputation par la médiane) et s'appuie sur **gpt-5-mini** uniquement pour le contexte métier et les cas ambigus (anomalies sémantiques, cardinaux intermédiaires, détection de features).
+This repository is an engineering case study, not an autonomous data-cleaning
+product. It does not establish that a dataset is unbiased, lawful or suitable for
+an operational model.
 
-Surtout : **l'humain garde le contrôle**. À chaque étape critique du pipeline, l'exécution s'interrompt pour soumettre les choix des agents à l'utilisateur.
+## What the system owns
 
----
+The pipeline accepts a CSV and target column, then:
 
-## Fonctionnement du Pipeline
+1. validates the source and profiles the schema;
+2. creates a random, stratified, temporal or group-aware train/test split;
+3. pauses for review of inferred context and possible leakage;
+4. proposes and applies train-fitted imputers and encoders;
+5. proposes and applies outlier treatment after another review;
+6. scales the resulting matrices and writes an auditable report.
 
-Le traitement est découpé entre 4 agents spécialisés. Le graphe d'état (LangGraph) garantit que les informations transitent correctement et que les interruptions humaines sont respectées.
-
-1. **L'Analyseur (Agent 1)**
-   Audit initial des types, suppression des colonnes inutiles (IDs, colonnes constantes ou full-NaN) et définition de la stratégie de split (stratifiée, temporelle, etc.) adaptée au contexte déduit.
-   *`-> Pause : l'utilisateur valide le split et le domaine métier.`*
-
-2. **Le Transformateur (Agent 2)**
-   Applique l'encodage (One-Hot, Frequency) et l'imputation (Mode, Médiane). Le LLM intervient ici pour résoudre les cas limites, détecter d'éventuels leakages, et proposer du feature engineering pertinent.
-   *`-> Pause : l'utilisateur valide les propositions de transformation.`*
-
-3. **Le Chasseur d'Outliers (Agent 3)**
-   Sélectionne dynamiquement la méthode statistique adaptée à la distribution de la colonne (IQR, Z-score, ou seuil bimodal selon le test de D'Agostino-Pearson) pour conserver l'information tout en isolant les anomalies.
-   *`-> Pause : l'utilisateur vérifie la logique d'écrêtage (clipping/removal).`*
-
-4. **Le Rapporteur (Agent 4)**
-   Génère les CSV finaux (train et test), entraîne une baseline rapide (Régression logistique vs Dummy), vérifie les contraintes, construit le dashboard Streamlit et calcule un **score de qualité sur 100** des données fraîchement nettoyées.
-
-> 🛡️ **Garantie anti-leakage** : L'outil est designé pour splitter les données *avant* le moindre calcul d'imputation ou d'encoding. Toutes les transformations (médianes, OHE, boundaries d'outliers) sont fittées exclusivement sur le split de _train_ puis appliquées aveuglément sur le _test_.
-
----
-
-## 🛠️ Installation
-
-Le projet utilise `uv` comme gestionnaire de dépendances. Assurez-vous d'avoir Python 3.12+ d'installé.
-
-```bash
-# Installer les dépendances cœur (si vous voulez juste le CLI)
-uv sync
-
-# Installer les dépendances de développement, les notebooks et le tracking (expériences)
-uv sync --extra dev --extra tracking
-
-# Créer votre fichier de configuration d'environnement
-cp .env.example .env
+```mermaid
+flowchart LR
+  A["Validated CSV source"] --> B["Profile schema"]
+  B --> C["Split before fit"]
+  C --> D["Review context"]
+  D --> E["Propose transformations"]
+  E --> F["Review transformations"]
+  F --> G["Fit on train; apply to test"]
+  G --> H["Review outliers"]
+  H --> I["Report and artifacts"]
 ```
 
-Vous devrez configurer vos clés API dans le fichier `.env` nouvellement créé, en copiant ce format :
+The graph and its review routes are defined in
+[`src/agents/pipeline.py`](src/agents/pipeline.py). A rejection returns to the
+relevant proposal stage instead of silently continuing.
+
+## Invariants enforced in code
+
+- **Split before fit:** imputation values, encoders, outlier boundaries and
+  scalers are learned from the training partition only.
+- **Human approval at ambiguous boundaries:** domain context, transformations
+  and outlier actions are explicit LangGraph interrupts.
+- **Restricted data sources:** the API reads only configured local roots and
+  explicitly allow-listed HTTPS hosts; redirects, private IP targets and files
+  over the configured size limit are rejected.
+- **Data minimization:** prompts receive schema and aggregate statistics, not
+  raw rows.
+- **Offline deterministic path:** the LLM client is created lazily and can be
+  replaced with a fake through `configure_llm_client`; collecting or running
+  deterministic tests does not require provider credentials.
+- **Opt-in persistence:** the SQLite LLM response cache is disabled unless
+  `LLM_CACHE_ENABLED=1` is set.
+
+The security boundary is implemented in
+[`src/security/input_sources.py`](src/security/input_sources.py), and the
+dependency-injection seam is in
+[`src/agents/dependencies.py`](src/agents/dependencies.py).
+
+## Engineering decisions
+
+| Decision | Alternative rejected | Reason and trade-off |
+| --- | --- | --- |
+| Split before transformation | Clean the full dataset and split afterward | Prevents leakage, at the cost of maintaining separate train-fitted state. |
+| Deterministic rules for mechanical operations | Ask an LLM to choose every operation | Rules are testable and reproducible; the LLM is reserved for ambiguous context. |
+| Explicit review interrupts | Apply every high-confidence proposal automatically | Review slows batch execution but preserves accountability for destructive choices. |
+| Injectable, lazy LLM client | Construct the provider client at import time | Keeps tests and rules usable without credentials and separates provider contracts. |
+| Allow-listed input sources | Accept arbitrary paths and URLs | Reduces SSRF and local-file exposure; operators must configure legitimate sources. |
+| Pydantic response contracts | Parse free-form model prose | Invalid outputs fail visibly or retry; schema evolution requires deliberate changes. |
+
+LangGraph is used because the workflow contains resumable approval points and
+back-edges. A linear script would be simpler for a fully automatic pipeline, but
+would obscure review state and rejection routing.
+
+## Run locally
+
+Requirements: Python 3.12 and [`uv`](https://docs.astral.sh/uv/).
+
+```bash
+uv sync
+uv run pytest -q
+```
+
+The deterministic path needs no API key. To enable contextual suggestions, copy
+`.env.example` to `.env` and set:
+
 ```env
-# LLM Provider Configuration
-# Fill in your credentials below
-
-# OpenAI 
-OPENAI_API_KEY='entrez votre api openai'
-# LangSmith (LangChain)
-LANGCHAIN_API_KEY='entrez votre api langchain'
-LANGCHAIN_PROJECT=projet Gen AI
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
-WANDB_API_KEY='entrez votre api wandb'
-
-# Google AI (Gemini) - for future use
-# GOOGLE_API_KEY=your-google-key-here
-
-# Anthropic (Claude) - for future use
-# ANTHROPIC_API_KEY=your-anthropic-key-here
-
-# Ollama (local) - for future use
-# OLLAMA_BASE_URL=http://localhost:11434
-
-# Default LLM provider: openai | google | anthropic | ollama
+OPENAI_API_KEY=...
 LLM_PROVIDER=openai
 LLM_MODEL=gpt-5-mini
 ```
 
----
-
-## 🚀 Utilisation
-
-### Via l'interface Web (Recommandé)
-
-C'est l'interface la plus agréable pour interagir avec les interruptions et voir visuellement les distributions et la qualité des données :
+### Streamlit review interface
 
 ```bash
 uv run streamlit run app_streamlit.py
 ```
 
-### Via la Ligne de Commande (CLI)
-
-Utile pour automatiser sur un serveur ou scripter.
+### Command line
 
 ```bash
-uv run python run.py chemin/vers/le/dataset.csv nom_de_la_colonne_cible
+uv run python run.py data/example.csv target
+uv run python run.py data/events.csv status --strategy temporal --time-col timestamp
+uv run python run.py data/patients.csv outcome --strategy group --group-col patient_id
 ```
 
-#### Exemples de split customisés depuis le CLI :
-
-```bash
-# Split temporel (ex: pour des séries temporelles ou des logs)
-uv run python run.py data/logs.csv status --strategy temporal --time-col timestamp --test-size 0.3
-
-# Split groupé (garantit que l'ID d'un client n'est pas coupé entre train et test)
-uv run python run.py data/patients.csv is_sick --strategy group --group-col patient_id
-```
-
-### Via l'API REST locale
-
-Permet d'intégrer le pipeline à un backend tiers ou un frontend React.
+### Local API
 
 ```bash
 uv run uvicorn src.api.app:app --reload
 ```
 
-Par defaut, l'API ne lit que les CSV places sous `data/` et refuse toutes les
-URL. Configurez `DATASET_ALLOWED_ROOTS` (separe par `;` sous Windows ou `:` sous
-Linux) et, uniquement si necessaire, `DATASET_ALLOWED_HOSTS` pour autoriser des
-hotesses HTTPS precises. La taille maximale est 25 Mio, ajustable avec
-`MAX_DATASET_BYTES`.
+By default the API reads CSV files only from `data/` and refuses URLs.
+`DATASET_ALLOWED_ROOTS` adds local roots and `DATASET_ALLOWED_HOSTS` adds exact
+HTTPS hosts. `MAX_DATASET_BYTES` defaults to 25 MiB.
 
-## Confidentialite et limites
+## How to review the implementation
 
-- Les lignes brutes ne sont jamais placees dans les prompts : seuls le schema,
-  les types et des statistiques agregees sont transmis au fournisseur LLM.
-- `OPENAI_API_KEY` n'est chargee qu'au premier appel LLM. Les regles
-  deterministes et leurs tests fonctionnent hors ligne avec un faux client
-  injectable.
-- Le cache LLM persistant est desactive par defaut, car une reponse peut contenir
-  des donnees reconstruites. `LLM_CACHE_ENABLED=1` l'active explicitement ; il
-  reste alors sous la responsabilite de l'operateur (retention, chiffrement du
-  disque et suppression).
-- L'outil assiste la preparation des donnees mais ne garantit ni leur conformite
-  reglementaire, ni l'absence de biais, ni la qualite d'un modele aval. Les
-  validations humaines restent obligatoires.
+| Question | Start here |
+| --- | --- |
+| Where are graph transitions and review loops defined? | `src/agents/pipeline.py` |
+| Where is split-before-fit enforced? | `src/agents/base_agent.py`, `src/agents/transformation_agent.py` |
+| How are LLM outputs constrained? | `src/agents/schemas.py`, `src/llm/gpt_client.py` |
+| How are credentials decoupled from tests? | `src/agents/dependencies.py`, `tests/test_security.py` |
+| How are file and URL inputs restricted? | `src/security/input_sources.py`, `src/api/app.py` |
+| Where are prompts versioned? | `config/prompt_templates.yaml` |
 
----
-
-## 🏗️ Structure du Dépôt
-
-L'architecture est granulaire et conçue pour être facilement testée (les tests unitaires sont très denses) :
+## Repository map
 
 ```text
-.
-├── config/                  # Layout des configurations (Modèle, logs, prompts versionnés)
-├── data/
-│   ├── cache/               # Base SQLite pour le state LangGraph et les embeddings LLM
-│   └── outputs/             # Vos CSV nettoyés finissent ici (ainsi que les scalers .joblib)
-├── notebooks/               # Benchmarks, démos interactives, tests de promping
-├── src/
-│   ├── agents/              # Le code métier des 4 agents et le StateGraph (pipeline.py)
-│   ├── api/                 # Endpoints FastAPI
-│   ├── llm/                 # Enrobage custom autour d'OpenAI (Cache local pour économiser de la thune)
-│   ├── prompt_engineering/  # Parsing Pydantic et gestion des templates YAML
-│   ├── tracking/            # Intégration W&B
-│   └── utils/               # Loggers
-├── tests/                   # +40 tests unitaires sur les règles déterministes (!llm)
-├── app_streamlit.py         # Dashboard final
-├── pyproject.toml           # Définition uv du package
-└── run.py                   # Entrée CLI
+config/                    Versioned model, logging and prompt configuration
+src/agents/                State, rules, proposals and LangGraph orchestration
+src/api/                   FastAPI integration surface
+src/llm/                   Provider client, retries and optional cache
+src/security/              Local path and remote-source validation
+src/prompt_engineering/    Prompt templates and structured parsing
+tests/                     Statistical, transformation and security contracts
+app_streamlit.py           Interactive review UI
+run.py                     CLI entry point
 ```
 
----
+## Verification and evidence boundary
 
-## ✨ Points techniques intéressants
-
-*   **Cache LLM local optionnel** : la clé est un SHA-256 des prompts et paramètres. Le stockage SQLite des réponses est explicitement opt-in avec `LLM_CACHE_ENABLED=1`.
-*   **Fallback & Sécurité** : Les réponses du LLM sont validées par `Pydantic`. S'il hallucine ou se trompe de format JSON, une boucle de réparation est déclenchée (jusqu'à 3 _retries_ exponentiels) avant de lever une erreur, assurant la résilience du script.
-*   **Transparence des Prompts** : Les prompts ne sont pas noyés dans le code source. Ils sont centralisés et versionnés dans `config/prompt_templates.yaml`, ce qui facilite les itérations et le benchmark.
-
----
-
-## 🧪 Tests
-
-Les comportements statistiques déterministes (détection de bimodalité de Sarle, logiques de fallback sur les splits, vérifications de cibles) sont fiabilisés par un solide harnais de tests (pytest) :
+Run the complete local suite with:
 
 ```bash
-# Lancer les tests
-uv run pytest tests/ -v
+uv run pytest -q
 ```
 
----
+The hardened reference run passes 84 tests covering deterministic rules,
+split strategies, transformation state, outlier behavior, fake-client injection
+and input-source controls. These tests validate software contracts; they do not
+prove that a suggested transformation is appropriate for an unseen business
+domain. Live-provider quality, cost and latency require a separate gated
+evaluation with a declared dataset and prompt version.
 
+## Known limitations
 
+- Human reviewers can reject indefinitely; the graph intentionally has no
+  automatic retry ceiling.
+- Aggregate metadata can still be sensitive in small or sparse datasets.
+- Statistical outlier rules can remove rare but valid cases.
+- The baseline report is a pipeline check, not a model-selection study.
+- A production service still needs identity, authorization, encrypted storage,
+  retention policy, observability and dataset-specific governance.
+
+## License
+
+See the repository license and the licenses of any datasets processed with it.
