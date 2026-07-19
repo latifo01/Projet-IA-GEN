@@ -22,6 +22,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from src.agents.pipeline import build_pipeline
+from src.security.input_sources import validate_dataset_source
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -70,7 +71,7 @@ class SplitConfig(BaseModel):
 
 
 class StartRequest(BaseModel):
-    df_path: str = Field(..., description="Chemin local ou URL du fichier CSV")
+    df_path: str = Field(..., description="CSV local autorise ou URL HTTPS explicitement autorisee")
     target: str = Field(..., description="Nom de la colonne cible")
     split_config: SplitConfig = Field(default_factory=SplitConfig)
 
@@ -93,11 +94,16 @@ class InterruptResponse(BaseModel):
 @app.post("/pipeline/start", response_model=InterruptResponse)
 def start_pipeline(req: StartRequest):
     """Demarre un nouveau pipeline. Retourne le premier point d'interruption (domain_review)."""
+    try:
+        safe_source = validate_dataset_source(req.df_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     session_id = str(uuid.uuid4())
     config = _config(session_id)
 
     initial_state = {
-        "df_path": req.df_path,
+        "df_path": safe_source,
         "target": req.target,
         "split_config": req.split_config.model_dump(),
     }

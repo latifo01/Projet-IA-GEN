@@ -6,6 +6,7 @@ La cle de cache est un hash SHA-256 de (model, temperature, seed, messages).
 
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -24,9 +25,13 @@ class LLMCache:
     def __init__(self, db_path: str | Path = _DEFAULT_DB):
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            db_path.parent.chmod(0o700)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.execute(_INIT_SQL)
         self._conn.commit()
+        if os.name != "nt" and db_path.exists():
+            db_path.chmod(0o600)
 
     def _make_key(self, model: str, temperature: float, seed: int | None, messages: list[dict]) -> str:
         payload = json.dumps(
@@ -47,4 +52,9 @@ class LLMCache:
             "INSERT OR REPLACE INTO llm_cache (key, response) VALUES (?, ?)",
             (key, response),
         )
+        self._conn.commit()
+
+    def clear(self) -> None:
+        """Delete cached responses, for retention and incident-response flows."""
+        self._conn.execute("DELETE FROM llm_cache")
         self._conn.commit()
