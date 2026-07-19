@@ -276,10 +276,9 @@ def analyze(state: PipelineState) -> dict:
     dtype_audit_cols = {d["column"] for d in dtype_audit}
     missing_patterns = _detect_missing_patterns(df, target, auto_drop_names | dtype_audit_cols)
 
-    # LLM call 1: domain + semantic anomalies (merged)
-    MAX_SAMPLE_COLS = 50
-    sample_df = df.iloc[:5, :MAX_SAMPLE_COLS] if len(df.columns) > MAX_SAMPLE_COLS else df.head(5)
-    sample = sample_df.to_string(max_colwidth=50)
+    # LLM call 1: send schema/statistics only. Raw rows can contain identifiers,
+    # health data or secrets and are never required for this semantic task.
+    sample = "Raw row values withheld by data-minimisation policy."
     system_prompt = prompt_templates.get_template("system_prompt")
 
     logger.info("Inferring domain context and anomalies (1 LLM call)")

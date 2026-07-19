@@ -112,6 +112,27 @@ Permet d'intégrer le pipeline à un backend tiers ou un frontend React.
 uv run uvicorn src.api.app:app --reload
 ```
 
+Par defaut, l'API ne lit que les CSV places sous `data/` et refuse toutes les
+URL. Configurez `DATASET_ALLOWED_ROOTS` (separe par `;` sous Windows ou `:` sous
+Linux) et, uniquement si necessaire, `DATASET_ALLOWED_HOSTS` pour autoriser des
+hotesses HTTPS precises. La taille maximale est 25 Mio, ajustable avec
+`MAX_DATASET_BYTES`.
+
+## Confidentialite et limites
+
+- Les lignes brutes ne sont jamais placees dans les prompts : seuls le schema,
+  les types et des statistiques agregees sont transmis au fournisseur LLM.
+- `OPENAI_API_KEY` n'est chargee qu'au premier appel LLM. Les regles
+  deterministes et leurs tests fonctionnent hors ligne avec un faux client
+  injectable.
+- Le cache LLM persistant est desactive par defaut, car une reponse peut contenir
+  des donnees reconstruites. `LLM_CACHE_ENABLED=1` l'active explicitement ; il
+  reste alors sous la responsabilite de l'operateur (retention, chiffrement du
+  disque et suppression).
+- L'outil assiste la preparation des donnees mais ne garantit ni leur conformite
+  reglementaire, ni l'absence de biais, ni la qualite d'un modele aval. Les
+  validations humaines restent obligatoires.
+
 ---
 
 ## 🏗️ Structure du Dépôt
@@ -142,7 +163,7 @@ L'architecture est granulaire et conçue pour être facilement testée (les test
 
 ## ✨ Points techniques intéressants
 
-*   **Cache LLM Local** : Tous les calls vers OpenAI sont hashés (SHA-256 des prompts et params) et sauvés dans SQLite. Si vous développez et relancez le script sur le même CSV, cela prend quelques ms et coûte 0$, l'outil utilise la base en mémoire.
+*   **Cache LLM local optionnel** : la clé est un SHA-256 des prompts et paramètres. Le stockage SQLite des réponses est explicitement opt-in avec `LLM_CACHE_ENABLED=1`.
 *   **Fallback & Sécurité** : Les réponses du LLM sont validées par `Pydantic`. S'il hallucine ou se trompe de format JSON, une boucle de réparation est déclenchée (jusqu'à 3 _retries_ exponentiels) avant de lever une erreur, assurant la résilience du script.
 *   **Transparence des Prompts** : Les prompts ne sont pas noyés dans le code source. Ils sont centralisés et versionnés dans `config/prompt_templates.yaml`, ce qui facilite les itérations et le benchmark.
 

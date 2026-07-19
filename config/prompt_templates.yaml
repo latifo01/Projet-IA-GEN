@@ -7,7 +7,7 @@ infer_domain_and_anomalies: |
   A partir des informations suivantes, infere le domaine metier de ce dataset et detecte les anomalies semantiques.
 
   Noms des colonnes : {columns}
-  Echantillon de valeurs (5 lignes) : {sample}
+  Politique de minimisation des donnees : {sample}
   Target : {target}
   Task type : {task_type}
   Colonnes et statistiques : {col_summary}

@@ -35,7 +35,9 @@ class GPTClient(BaseLLMClient):
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment variables.")
         self.client = OpenAI(api_key=api_key)
-        self._cache = LLMCache()
+        # Responses may contain reconstructed business or personal data.  A
+        # persistent plaintext cache is therefore opt-in, never the default.
+        self._cache = LLMCache() if os.getenv("LLM_CACHE_ENABLED", "0") == "1" else None
 
     def complete(self, prompt: str, system_prompt: str = "") -> str:
         messages = []
@@ -45,7 +47,7 @@ class GPTClient(BaseLLMClient):
         return self.chat(messages)
 
     def chat(self, messages: list[dict]) -> str:
-        cached = self._cache.get(self.model_name, self.temperature, self.seed, messages)
+        cached = self._cache.get(self.model_name, self.temperature, self.seed, messages) if self._cache else None
         if cached is not None:
             logger.debug("LLM cache hit")
             return cached
@@ -62,5 +64,6 @@ class GPTClient(BaseLLMClient):
         response = self.client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
 
-        self._cache.set(self.model_name, self.temperature, self.seed, messages, content)
+        if self._cache:
+            self._cache.set(self.model_name, self.temperature, self.seed, messages, content)
         return content
